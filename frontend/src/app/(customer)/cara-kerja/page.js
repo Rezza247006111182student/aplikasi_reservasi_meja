@@ -26,7 +26,7 @@ const steps = [
     number: "03",
     title: "Pilih meja tersedia",
     description:
-      "Meja hijau dapat dipilih, meja merah sedang dipesan, dan meja abu-abu sedang tidak aktif.",
+      "Meja hijau dapat dipilih, meja kuning telah dipesan, meja merah sedang dipakai, dan meja abu-abu tidak aktif.",
     icon: "fa-solid fa-chair",
     image:
       "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=900&q=80",
@@ -44,18 +44,18 @@ const steps = [
 
 const notes = [
   {
-    title: "Data dummy frontend",
-    description: "Sampai backend tersedia, seluruh jadwal, meja, dan status masih berupa data contoh.",
+    title: "Data dari backend",
+    description: "Jadwal, meja, status, dan riwayat reservasi ditampilkan dari API yang terhubung ke database.",
     icon: "fa-solid fa-database",
   },
   {
-    title: "Siap validasi double booking",
-    description: "Alur reservasi sudah disiapkan agar nanti validasi bentrok jadwal dilakukan di server.",
+    title: "Validasi double booking",
+    description: "Setiap reservasi diperiksa di server agar satu meja tidak dipesan pada rentang waktu yang bertabrakan.",
     icon: "fa-solid fa-shield-halved",
   },
   {
-    title: "Siap real-time update",
-    description: "Status meja dapat dihubungkan ke Socket.io agar perubahan langsung terlihat oleh pelanggan.",
+    title: "Pembaruan status meja",
+    description: "Status meja diperbarui dari backend dan dapat dikembangkan dengan Socket.io untuk pembaruan langsung antar pengguna.",
     icon: "fa-solid fa-signal",
   },
 ];
@@ -67,8 +67,13 @@ const statusItems = [
     className: "bg-green-100 text-green-800 border-green-200",
   },
   {
-    label: "Dipesan",
-    description: "Meja sedang dipakai atau sudah dipesan pada jadwal tersebut.",
+    label: "Telah dipesan",
+    description: "Meja sudah memiliki reservasi pada jadwal yang dipilih.",
+    className: "bg-amber-100 text-amber-800 border-amber-200",
+  },
+  {
+    label: "Sedang dipakai",
+    description: "Meja sedang digunakan pada waktu berjalan.",
     className: "bg-red-100 text-red-800 border-red-200",
   },
   {
@@ -136,11 +141,11 @@ export default function CaraKerjaPage() {
                 </h2>
               </div>
             </div>
-            <div className="grid gap-3 bg-white p-4 sm:grid-cols-3">
+            <div className="grid gap-3 bg-white p-4 sm:grid-cols-2 xl:grid-cols-4">
               {statusItems.map((status) => (
                 <div
                   key={status.label}
-                  className={`rounded-lg border p-4 ${status.className}`}
+                  className={`min-h-28 rounded-lg border p-4 ${status.className}`}
                 >
                   <p className="text-sm font-bold">{status.label}</p>
                   <p className="mt-1 text-xs leading-5 opacity-80">
@@ -234,12 +239,13 @@ export default function CaraKerjaPage() {
               Catatan Implementasi
             </p>
             <h2 className="mt-2 text-3xl font-bold text-slate-950">
-              Tampilan sudah siap diarahkan ke backend
+              Terhubung dengan alur reservasi backend
             </h2>
             <p className="mt-4 text-sm leading-6 text-slate-600">
-              Saat ini halaman menggunakan foto dan data dummy. Struktur
-              tampilan tetap disiapkan agar nanti data meja, layout ruangan,
-              status reservasi, dan notifikasi bisa diambil dari API.
+              Halaman pelanggan dirancang mengikuti alur data aplikasi:
+              pelanggan memilih jadwal, sistem membaca ketersediaan meja dari
+              backend, lalu reservasi disimpan dan dipantau melalui riwayat
+              serta notifikasi akun.
             </p>
             <div className="mt-6 grid gap-3">
               {notes.map((note) => (

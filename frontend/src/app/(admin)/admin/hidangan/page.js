@@ -44,6 +44,17 @@ const emptyForm = {
   description: "",
 };
 
+const maxImageSize = 2 * 1024 * 1024;
+const allowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
+
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Gagal membaca file gambar"));
+    reader.readAsDataURL(file);
+  });
+
 export default function AdminMenuPage() {
   const [menus, setMenus] = useState([]);
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -96,17 +107,59 @@ export default function AdminMenuPage() {
     setEditingMenu(emptyForm);
   };
 
+  const handleImageFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!allowedImageTypes.includes(file.type)) {
+      setNotice({ type: "error", message: "Format foto harus JPG, PNG, atau WEBP." });
+      event.target.value = "";
+      return;
+    }
+
+    if (file.size > maxImageSize) {
+      setNotice({ type: "error", message: "Ukuran foto maksimal 2MB." });
+      event.target.value = "";
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setEditingMenu((current) => ({
+        ...current,
+        imageUpload: {
+          fileName: file.name,
+          mimeType: file.type,
+          dataUrl,
+        },
+      }));
+      setNotice({ type: "", message: "" });
+    } catch (error) {
+      setNotice({ type: "error", message: error.message });
+    }
+  };
+
   const saveMenu = async () => {
     setIsSaving(true);
     setNotice({ type: "", message: "" });
 
     try {
+      let imageUrl = editingMenu.imageUrl;
+
+      if (editingMenu.imageUpload) {
+        const upload = await apiFetch("/api/admin/uploads/menu-image", {
+          method: "POST",
+          body: JSON.stringify(editingMenu.imageUpload),
+        });
+        imageUrl = upload.imageUrl;
+      }
+
       const payload = {
         name: editingMenu.name,
         category: editingMenu.category,
         price: Number(editingMenu.price),
         description: editingMenu.description,
-        imageUrl: editingMenu.imageUrl,
+        imageUrl,
         isFavorite: editingMenu.isFavorite,
         status: editingMenu.status,
       };
@@ -258,6 +311,7 @@ export default function AdminMenuPage() {
                         fill
                         sizes="80px"
                         className="object-cover"
+                        unoptimized={Boolean(menu.imageUrl)}
                       />
                       <span
                         className={`absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-md border text-[11px] shadow-sm ${
@@ -367,14 +421,40 @@ export default function AdminMenuPage() {
                 onChange={(status) => setEditingMenu({ ...editingMenu, status })}
                 options={editStatusOptions}
               />
-              <div className="sm:col-span-2">
-                <FieldInput
-                  label="URL foto"
-                  value={editingMenu.imageUrl ?? ""}
-                  onChange={(event) => setEditingMenu({ ...editingMenu, imageUrl: event.target.value })}
-                  icon="fa-regular fa-image"
-                  placeholder="https://..."
-                />
+              <div className="grid gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:col-span-2 sm:grid-cols-[160px_minmax(0,1fr)]">
+                <div className="relative h-36 overflow-hidden rounded-md bg-white">
+                  <Image
+                    src={editingMenu.imageUpload?.dataUrl || editingMenu.imageUrl || fallbackMenuImage}
+                    alt="Preview foto hidangan"
+                    fill
+                    sizes="160px"
+                    className="object-cover"
+                    unoptimized={Boolean(editingMenu.imageUpload?.dataUrl || editingMenu.imageUrl)}
+                  />
+                </div>
+                <div className="grid content-start gap-3">
+                  <label className="block">
+                    <span className="text-sm font-semibold text-slate-700">Upload foto</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={handleImageFileChange}
+                      className="mt-2 block w-full rounded-md border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-800 shadow-sm outline-none file:mr-4 file:rounded-md file:border-0 file:bg-teal-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-teal-700 hover:border-teal-300 focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
+                    />
+                  </label>
+                  <FieldInput
+                    label="URL foto"
+                    value={editingMenu.imageUrl ?? ""}
+                    onChange={(event) =>
+                      setEditingMenu({ ...editingMenu, imageUrl: event.target.value, imageUpload: null })
+                    }
+                    icon="fa-regular fa-image"
+                    placeholder="https://..."
+                  />
+                  <p className="text-xs leading-5 text-slate-500">
+                    Upload JPG, PNG, atau WEBP maksimal 2MB. URL akan disimpan ke kolom image_url.
+                  </p>
+                </div>
               </div>
               <label className="sm:col-span-2">
                 <span className="mb-2 block text-sm font-semibold text-slate-700">Deskripsi</span>

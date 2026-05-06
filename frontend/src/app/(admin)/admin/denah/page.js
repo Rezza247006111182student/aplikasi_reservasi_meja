@@ -8,14 +8,15 @@ import { apiFetch, tableStatusLabels } from "../../../_lib/api";
 
 const statusStyles = {
   available: { fill: "#bbf7d0", stroke: "#16a34a", text: "#166534", pill: "bg-green-100 text-green-700" },
-  reserved: { fill: "#fecaca", stroke: "#dc2626", text: "#991b1b", pill: "bg-red-100 text-red-700" },
+  reserved: { fill: "#fde68a", stroke: "#f59e0b", text: "#92400e", pill: "bg-amber-100 text-amber-700" },
   booked: { fill: "#fecaca", stroke: "#dc2626", text: "#991b1b", pill: "bg-red-100 text-red-700" },
+  unavailable: { fill: "#f1f5f9", stroke: "#64748b", text: "#334155", pill: "bg-slate-100 text-slate-700" },
   inactive: { fill: "#e2e8f0", stroke: "#94a3b8", text: "#475569", pill: "bg-slate-100 text-slate-700" },
 };
 
 const statusOptions = [
   { label: "Tersedia", value: "available" },
-  { label: "Dipesan", value: "reserved" },
+  { label: "Telah dipesan", value: "reserved" },
   { label: "Tidak aktif", value: "inactive" },
 ];
 
@@ -24,6 +25,20 @@ const shapeOptions = [
   { label: "Persegi", value: "square" },
   { label: "Persegi panjang", value: "rectangle" },
 ];
+
+const defaultLayout = {
+  hasCashier: false,
+  cashierX: 500,
+  cashierY: 342,
+  cashierWidth: 64,
+  cashierHeight: 42,
+  cashierRotation: 0,
+  doorX: 67,
+  doorY: 63,
+  doorWidth: 62,
+  doorHeight: 54,
+  doorRotation: 0,
+};
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -38,10 +53,11 @@ const getSvgPoint = (event) => {
 export default function AdminFloorEditorPage() {
   const [tables, setTables] = useState([]);
   const [zones, setZones] = useState([]);
+  const [layouts, setLayouts] = useState([]);
   const [floor, setFloor] = useState("");
   const [room, setRoom] = useState("");
   const [selectedId, setSelectedId] = useState("");
-  const [draggingId, setDraggingId] = useState("");
+  const [dragTarget, setDragTarget] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [notice, setNotice] = useState({ type: "", message: "" });
@@ -49,13 +65,15 @@ export default function AdminFloorEditorPage() {
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [tableData, zoneData] = await Promise.all([
+      const [tableData, zoneData, layoutData] = await Promise.all([
         apiFetch("/api/tables"),
         apiFetch("/api/zones"),
+        apiFetch("/api/room-layouts"),
       ]);
 
       setTables(tableData);
       setZones(zoneData);
+      setLayouts(layoutData);
 
       const firstTable = tableData[0];
       const firstZone = zoneData[0];
@@ -99,10 +117,25 @@ export default function AdminFloorEditorPage() {
     [floor, room, tables],
   );
 
+  const currentZone = useMemo(
+    () => zones.find((zone) => zone.floor === floor && zone.room === room) ?? null,
+    [floor, room, zones],
+  );
+
+  const currentLayout = useMemo(() => {
+    if (!currentZone) return defaultLayout;
+    return layouts.find((layout) => Number(layout.zoneId) === Number(currentZone.id)) ?? defaultLayout;
+  }, [currentZone, layouts]);
+
   const selectedTable =
     visibleTables.find((table) => String(table.id) === String(selectedId)) ??
     visibleTables[0] ??
     null;
+  const doorWidth = Number(currentLayout.doorWidth || defaultLayout.doorWidth);
+  const doorHeight = Number(currentLayout.doorHeight || defaultLayout.doorHeight);
+  const doorIconScale = Math.max(0.6, Math.min(1.8, Math.min(doorWidth / 62, doorHeight / 54)));
+  const cashierWidth = Number(currentLayout.cashierWidth || defaultLayout.cashierWidth);
+  const cashierHeight = Number(currentLayout.cashierHeight || defaultLayout.cashierHeight);
 
   const updateSelectedTable = (patch) => {
     if (!selectedTable) return;
@@ -131,49 +164,104 @@ export default function AdminFloorEditorPage() {
     setRoom(roomForFloor);
   };
 
-  const handlePointerDown = (event, table) => {
+  const updateCurrentLayout = (patch) => {
+    if (!currentZone) return;
+
+    setLayouts((current) => {
+      const existing = current.find((layout) => Number(layout.zoneId) === Number(currentZone.id));
+      const nextLayout = {
+        ...(existing ?? { ...defaultLayout, zoneId: currentZone.id }),
+        ...patch,
+        zoneId: currentZone.id,
+      };
+
+      if (existing) {
+        return current.map((layout) =>
+          Number(layout.zoneId) === Number(currentZone.id) ? nextLayout : layout,
+        );
+      }
+
+      return [...current, nextLayout];
+    });
+  };
+
+  const handlePointerDown = (event, target) => {
     event.currentTarget.setPointerCapture(event.pointerId);
-    setSelectedId(table.id);
-    setDraggingId(table.id);
+    setDragTarget(target);
+    if (target.type === "table") setSelectedId(target.id);
   };
 
   const handlePointerMove = (event) => {
-    if (!draggingId) return;
+    if (!dragTarget) return;
     const point = getSvgPoint(event);
+    const nextX = clamp(point.x, 42, 578);
+    const nextY = clamp(point.y, 46, 380);
+
+    if (dragTarget.type === "door") {
+      updateCurrentLayout({ doorX: Number(nextX.toFixed(2)), doorY: Number(nextY.toFixed(2)) });
+      return;
+    }
+
+    if (dragTarget.type === "cashier") {
+      updateCurrentLayout({ cashierX: Number(nextX.toFixed(2)), cashierY: Number(nextY.toFixed(2)) });
+      return;
+    }
+
     setTables((current) =>
       current.map((table) =>
-        String(table.id) === String(draggingId)
-          ? { ...table, x: clamp(point.x, 48, 560), y: clamp(point.y, 56, 360) }
+        String(table.id) === String(dragTarget.id)
+          ? { ...table, x: nextX, y: nextY }
           : table,
       ),
     );
   };
 
   const handlePointerUp = () => {
-    setDraggingId("");
+    setDragTarget(null);
   };
 
   const saveSelectedTable = async () => {
-    if (!selectedTable) return;
+    if (!currentZone) return;
     setIsSaving(true);
     setNotice({ type: "", message: "" });
 
     try {
-      await apiFetch(`/api/admin/tables/${selectedTable.id}`, {
+      await apiFetch(`/api/admin/room-layouts/${currentZone.id}`, {
         method: "PATCH",
         body: JSON.stringify({
-          x: Number(selectedTable.x),
-          y: Number(selectedTable.y),
-          width: Number(selectedTable.width),
-          height: Number(selectedTable.height),
-          rotation: Number(selectedTable.rotation || 0),
-          capacity: Number(selectedTable.capacity),
-          shape: selectedTable.shape,
-          status: selectedTable.status,
+          hasCashier: currentLayout.hasCashier,
+          cashierX: Number(currentLayout.cashierX),
+          cashierY: Number(currentLayout.cashierY),
+          cashierWidth: Number(currentLayout.cashierWidth),
+          cashierHeight: Number(currentLayout.cashierHeight),
+          cashierRotation: Number(currentLayout.cashierRotation || 0),
+          doorX: Number(currentLayout.doorX),
+          doorY: Number(currentLayout.doorY),
+          doorWidth: Number(currentLayout.doorWidth),
+          doorHeight: Number(currentLayout.doorHeight),
+          doorRotation: Number(currentLayout.doorRotation || 0),
         }),
       });
 
-      setNotice({ type: "success", message: "Layout meja berhasil disimpan." });
+      await Promise.all(
+        visibleTables.map((table) =>
+          apiFetch(`/api/admin/tables/${table.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              x: Number(table.x),
+              y: Number(table.y),
+              width: Number(table.width),
+              height: Number(table.height),
+              rotation: Number(table.rotation || 0),
+              capacity: Number(table.capacity),
+              shape: table.shape,
+              status: table.status,
+            }),
+          }),
+        ),
+      );
+
+      setNotice({ type: "success", message: "Layout ruangan berhasil disimpan." });
       await loadData();
     } catch (error) {
       setNotice({ type: "error", message: error.message });
@@ -232,16 +320,51 @@ export default function AdminFloorEditorPage() {
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerLeave={handlePointerUp}
+                onPointerCancel={handlePointerUp}
               >
                 <rect x="18" y="18" width="584" height="384" rx="12" fill="#f8fafc" stroke="#cbd5e1" strokeWidth="2" />
                 <path d="M164 36V384" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="8 10" />
                 <path d="M36 150H584" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="8 10" />
                 <path d="M36 276H584" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="8 10" />
-                <rect x="36" y="36" width="62" height="54" rx="8" fill="#fef3c7" stroke="#f59e0b" strokeWidth="2" />
-                <path d="M58 78V48H80V78" fill="#fff7ed" stroke="#92400e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M80 48L88 54V84L80 78Z" fill="#fde68a" stroke="#92400e" strokeWidth="2" strokeLinejoin="round" />
-                <rect x="500" y="322" width="64" height="42" rx="6" fill="#e0f2fe" stroke="#0284c7" />
-                <text x="516" y="348" fontSize="10" fontWeight="700" fill="#0369a1">KASIR</text>
+                <g
+                  transform={`translate(${currentLayout.doorX} ${currentLayout.doorY}) rotate(${Number(currentLayout.doorRotation || 0)})`}
+                  className="cursor-grab active:cursor-grabbing"
+                  onPointerDown={(event) => handlePointerDown(event, { type: "door" })}
+                >
+                  <rect
+                    x={-doorWidth / 2}
+                    y={-doorHeight / 2}
+                    width={doorWidth}
+                    height={doorHeight}
+                    rx="8"
+                    fill="#fef3c7"
+                    stroke="#f59e0b"
+                    strokeWidth="2"
+                  />
+                  <g transform={`scale(${doorIconScale})`}>
+                    <path d="M-9 15V-15H13V15" fill="#fff7ed" stroke="#92400e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M13 -15L21 -9V21L13 15Z" fill="#fde68a" stroke="#92400e" strokeWidth="2" strokeLinejoin="round" />
+                  </g>
+                  <text x="0" y={doorHeight / 2 + 13} textAnchor="middle" fontSize="9" fontWeight="700" fill="#92400e">PINTU</text>
+                </g>
+                {currentLayout.hasCashier ? (
+                  <g
+                    transform={`translate(${currentLayout.cashierX} ${currentLayout.cashierY}) rotate(${Number(currentLayout.cashierRotation || 0)})`}
+                    className="cursor-grab active:cursor-grabbing"
+                    onPointerDown={(event) => handlePointerDown(event, { type: "cashier" })}
+                  >
+                    <rect
+                      x={-cashierWidth / 2}
+                      y={-cashierHeight / 2}
+                      width={cashierWidth}
+                      height={cashierHeight}
+                      rx="6"
+                      fill="#e0f2fe"
+                      stroke="#0284c7"
+                    />
+                    <text x="0" y="5" textAnchor="middle" fontSize="10" fontWeight="700" fill="#0369a1">KASIR</text>
+                  </g>
+                ) : null}
 
                 {visibleTables.map((table) => {
                   const style = statusStyles[table.status] ?? statusStyles.available;
@@ -253,7 +376,7 @@ export default function AdminFloorEditorPage() {
                   return (
                     <g
                       key={table.id}
-                      onPointerDown={(event) => handlePointerDown(event, table)}
+                      onPointerDown={(event) => handlePointerDown(event, { type: "table", id: table.id })}
                       className="cursor-grab active:cursor-grabbing"
                       transform={`rotate(${Number(table.rotation || 0)} ${table.x} ${table.y})`}
                     >
@@ -313,7 +436,170 @@ export default function AdminFloorEditorPage() {
           </div>
         </section>
 
-        <aside className="grid gap-6">
+        <aside className="grid gap-6 pr-1 xl:sticky xl:top-24 xl:max-h-[calc(100vh-7rem)] xl:self-start xl:overflow-y-auto">
+          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold uppercase text-teal-700">Pengaturan Ruangan</p>
+            <h3 className="mt-2 text-2xl font-bold text-slate-950">
+              {currentZone ? `${currentZone.floor} - ${currentZone.room}` : "-"}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Drag pintu dan kasir langsung di canvas atau ubah koordinatnya dari panel ini.
+            </p>
+
+            <div className="mt-5 grid gap-4">
+              <label className="flex items-center gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+                <input
+                  type="checkbox"
+                  checked={Boolean(currentLayout.hasCashier)}
+                  onChange={(event) => updateCurrentLayout({ hasCashier: event.target.checked })}
+                  className="h-4 w-4 accent-teal-600"
+                  disabled={!currentZone}
+                />
+                <span className="text-sm font-semibold text-slate-700">Ruangan memiliki kasir</span>
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <FieldInput
+                  label="Pintu X"
+                  type="number"
+                  icon="fa-solid fa-door-open"
+                  value={currentLayout.doorX}
+                  onChange={(event) => updateCurrentLayout({ doorX: event.target.value })}
+                  disabled={!currentZone}
+                />
+                <FieldInput
+                  label="Pintu Y"
+                  type="number"
+                  icon="fa-solid fa-door-open"
+                  value={currentLayout.doorY}
+                  onChange={(event) => updateCurrentLayout({ doorY: event.target.value })}
+                  disabled={!currentZone}
+                />
+                <FieldInput
+                  label="Lebar Pintu"
+                  type="number"
+                  icon="fa-solid fa-left-right"
+                  min="28"
+                  value={currentLayout.doorWidth}
+                  onChange={(event) => updateCurrentLayout({ doorWidth: event.target.value })}
+                  disabled={!currentZone}
+                />
+                <FieldInput
+                  label="Tinggi Pintu"
+                  type="number"
+                  icon="fa-solid fa-up-down"
+                  min="28"
+                  value={currentLayout.doorHeight}
+                  onChange={(event) => updateCurrentLayout({ doorHeight: event.target.value })}
+                  disabled={!currentZone}
+                />
+                <FieldInput
+                  label="Kemiringan Pintu"
+                  type="number"
+                  icon="fa-solid fa-rotate"
+                  min="-180"
+                  max="180"
+                  value={currentLayout.doorRotation ?? 0}
+                  onChange={(event) => updateCurrentLayout({ doorRotation: event.target.value })}
+                  disabled={!currentZone}
+                />
+                <span className="hidden sm:block" />
+                <FieldInput
+                  label="Kasir X"
+                  type="number"
+                  icon="fa-solid fa-cash-register"
+                  value={currentLayout.cashierX}
+                  onChange={(event) => updateCurrentLayout({ cashierX: event.target.value })}
+                  disabled={!currentZone || !currentLayout.hasCashier}
+                />
+                <FieldInput
+                  label="Kasir Y"
+                  type="number"
+                  icon="fa-solid fa-cash-register"
+                  value={currentLayout.cashierY}
+                  onChange={(event) => updateCurrentLayout({ cashierY: event.target.value })}
+                  disabled={!currentZone || !currentLayout.hasCashier}
+                />
+                <FieldInput
+                  label="Lebar Kasir"
+                  type="number"
+                  icon="fa-solid fa-left-right"
+                  min="28"
+                  value={currentLayout.cashierWidth}
+                  onChange={(event) => updateCurrentLayout({ cashierWidth: event.target.value })}
+                  disabled={!currentZone || !currentLayout.hasCashier}
+                />
+                <FieldInput
+                  label="Tinggi Kasir"
+                  type="number"
+                  icon="fa-solid fa-up-down"
+                  min="28"
+                  value={currentLayout.cashierHeight}
+                  onChange={(event) => updateCurrentLayout({ cashierHeight: event.target.value })}
+                  disabled={!currentZone || !currentLayout.hasCashier}
+                />
+                <FieldInput
+                  label="Kemiringan Kasir"
+                  type="number"
+                  icon="fa-solid fa-rotate"
+                  min="-180"
+                  max="180"
+                  value={currentLayout.cashierRotation ?? 0}
+                  onChange={(event) => updateCurrentLayout({ cashierRotation: event.target.value })}
+                  disabled={!currentZone || !currentLayout.hasCashier}
+                />
+              </div>
+
+              <div className="grid gap-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+                <div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-semibold text-slate-700">Rotasi pintu</span>
+                    <span className="text-xs font-semibold text-slate-500">
+                      {Number(currentLayout.doorRotation || 0)} deg
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-180"
+                    max="180"
+                    step="5"
+                    value={currentLayout.doorRotation ?? 0}
+                    onChange={(event) => updateCurrentLayout({ doorRotation: event.target.value })}
+                    className="mt-3 w-full accent-teal-600"
+                    disabled={!currentZone}
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-semibold text-slate-700">Rotasi kasir</span>
+                    <span className="text-xs font-semibold text-slate-500">
+                      {Number(currentLayout.cashierRotation || 0)} deg
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-180"
+                    max="180"
+                    step="5"
+                    value={currentLayout.cashierRotation ?? 0}
+                    onChange={(event) => updateCurrentLayout({ cashierRotation: event.target.value })}
+                    className="mt-3 w-full accent-teal-600"
+                    disabled={!currentZone || !currentLayout.hasCashier}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={isSaving || !currentZone}
+              onClick={saveSelectedTable}
+              className="mt-5 inline-flex h-11 w-full items-center justify-center rounded-md bg-teal-600 px-5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {isSaving ? "Menyimpan..." : "Simpan Layout Ruangan"}
+            </button>
+          </section>
+
           <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-sm font-semibold uppercase text-teal-700">Meja Terpilih</p>
             <h3 className="mt-2 text-2xl font-bold text-slate-950">{selectedTable?.code || "-"}</h3>
@@ -359,6 +645,33 @@ export default function AdminFloorEditorPage() {
                       onChange={(event) => updateSelectedTable({ height: event.target.value })}
                     />
                   </div>
+                  <FieldInput
+                    label="Kemiringan"
+                    type="number"
+                    icon="fa-solid fa-rotate"
+                    min="-180"
+                    max="180"
+                    value={selectedTable.rotation ?? 0}
+                    onChange={(event) => updateSelectedTable({ rotation: event.target.value })}
+                  />
+                </div>
+
+                <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-semibold text-slate-700">Rotasi cepat</span>
+                    <span className="text-xs font-semibold text-slate-500">
+                      {Number(selectedTable.rotation || 0)} deg
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-180"
+                    max="180"
+                    step="5"
+                    value={selectedTable.rotation ?? 0}
+                    onChange={(event) => updateSelectedTable({ rotation: event.target.value })}
+                    className="mt-3 w-full accent-teal-600"
+                  />
                 </div>
 
                 <div className="mt-5 grid grid-cols-3 gap-2">
@@ -382,15 +695,6 @@ export default function AdminFloorEditorPage() {
                   </button>
                   <span />
                 </div>
-
-                <button
-                  type="button"
-                  disabled={isSaving}
-                  onClick={saveSelectedTable}
-                  className="mt-5 inline-flex h-11 w-full items-center justify-center rounded-md bg-teal-600 px-5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  {isSaving ? "Menyimpan..." : "Simpan Layout"}
-                </button>
               </>
             ) : null}
           </section>

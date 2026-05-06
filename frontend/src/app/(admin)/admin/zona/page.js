@@ -4,22 +4,25 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AdminShell from "../../../_components/AdminShell";
 import CustomSelect from "../../../_components/CustomSelect";
 import FieldInput from "../../../_components/FieldInput";
-import { apiFetch } from "../../../_lib/api";
-
-const floorOptions = [
-  { label: "Semua lantai", value: "all" },
-  { label: "Lantai 1", value: "Lantai 1" },
-  { label: "Lantai 2", value: "Lantai 2" },
-];
+import { apiFetch, tableStatusLabels } from "../../../_lib/api";
 
 const statusOptions = [
-  { label: "Semua status", value: "all" },
   { label: "Aktif", value: "active" },
   { label: "Maintenance", value: "maintenance" },
   { label: "Nonaktif", value: "inactive" },
 ];
 
-const editStatusOptions = statusOptions.filter((option) => option.value !== "all");
+const tableStatusOptions = [
+  { label: "Tersedia", value: "available" },
+  { label: "Telah dipesan", value: "reserved" },
+  { label: "Tidak aktif", value: "inactive" },
+];
+
+const shapeOptions = [
+  { label: "Bundar", value: "round" },
+  { label: "Persegi", value: "square" },
+  { label: "Persegi panjang", value: "rectangle" },
+];
 
 const statusClass = {
   active: "bg-green-100 text-green-700",
@@ -33,7 +36,22 @@ const statusLabels = {
   inactive: "Nonaktif",
 };
 
-const emptyZone = {
+const tablePillClass = {
+  available: "bg-green-100 text-green-700",
+  reserved: "bg-amber-100 text-amber-700",
+  booked: "bg-red-100 text-red-700",
+  inactive: "bg-slate-100 text-slate-700",
+};
+
+const slugCode = (value, fallback) =>
+  String(value || fallback)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 16);
+
+const emptyRoom = {
   id: "",
   code: "",
   floor: "Lantai 1",
@@ -43,12 +61,29 @@ const emptyZone = {
   status: "active",
 };
 
+const emptyTable = {
+  code: "",
+  zoneId: "",
+  capacity: 4,
+  shape: "round",
+  status: "available",
+};
+
+const defaultLayout = {
+  hasCashier: false,
+  cashierX: 330,
+  cashierY: 260,
+  doorX: 54,
+  doorY: 48,
+};
+
 export default function AdminZonesPage() {
   const [zones, setZones] = useState([]);
   const [tables, setTables] = useState([]);
-  const [floorFilter, setFloorFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [editingZone, setEditingZone] = useState(null);
+  const [layouts, setLayouts] = useState([]);
+  const [selectedFloor, setSelectedFloor] = useState("all");
+  const [roomForm, setRoomForm] = useState(null);
+  const [tableForm, setTableForm] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [notice, setNotice] = useState({ type: "", message: "" });
@@ -56,12 +91,14 @@ export default function AdminZonesPage() {
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [zoneData, tableData] = await Promise.all([
+      const [zoneData, tableData, layoutData] = await Promise.all([
         apiFetch("/api/zones"),
         apiFetch("/api/tables"),
+        apiFetch("/api/room-layouts"),
       ]);
       setZones(zoneData);
       setTables(tableData);
+      setLayouts(layoutData);
       setNotice({ type: "", message: "" });
     } catch (error) {
       setNotice({ type: "error", message: error.message });
@@ -74,46 +111,119 @@ export default function AdminZonesPage() {
     void Promise.resolve().then(loadData);
   }, [loadData]);
 
-  const zonesWithTableCount = useMemo(
+  const layoutByZoneId = useMemo(() => {
+    const map = new Map();
+    layouts.forEach((layout) => map.set(Number(layout.zoneId), layout));
+    return map;
+  }, [layouts]);
+
+  const zonesWithTables = useMemo(
     () =>
-      zones.map((zone) => ({
-        ...zone,
-        tables: tables.filter((table) => Number(table.zoneId) === Number(zone.id)).length,
-      })),
-    [tables, zones],
+      zones.map((zone) => {
+        const zoneTables = tables.filter((table) => Number(table.zoneId) === Number(zone.id));
+
+        return {
+          ...zone,
+          layout: layoutByZoneId.get(Number(zone.id)) ?? defaultLayout,
+          tables: zoneTables,
+          tableCount: zoneTables.length,
+        };
+      }),
+    [layoutByZoneId, tables, zones],
   );
 
-  const filteredZones = useMemo(() => {
-    return zonesWithTableCount.filter((zone) => {
-      const matchFloor = floorFilter === "all" || zone.floor === floorFilter;
-      const matchStatus = statusFilter === "all" || zone.status === statusFilter;
-      return matchFloor && matchStatus;
+  const floors = useMemo(() => {
+    const grouped = new Map();
+
+    zonesWithTables.forEach((zone) => {
+      if (!grouped.has(zone.floor)) grouped.set(zone.floor, []);
+      grouped.get(zone.floor).push(zone);
     });
-  }, [floorFilter, statusFilter, zonesWithTableCount]);
+
+    return [...grouped.entries()]
+      .map(([floor, rooms]) => ({
+        floor,
+        rooms: rooms.sort((a, b) => a.room.localeCompare(b.room)),
+        tableCount: rooms.reduce((total, room) => total + room.tableCount, 0),
+      }))
+      .filter((item) => selectedFloor === "all" || item.floor === selectedFloor)
+      .sort((a, b) => a.floor.localeCompare(b.floor));
+  }, [selectedFloor, zonesWithTables]);
+
+  const floorOptions = useMemo(() => {
+    const list = [...new Set(zones.map((zone) => zone.floor).filter(Boolean))].sort();
+    return [{ label: "Semua lantai", value: "all" }, ...list.map((floor) => ({ label: floor, value: floor }))];
+  }, [zones]);
 
   const stats = [
-    ["Total Zona", zones.length, "fa-solid fa-layer-group"],
+    ["Total Lantai", new Set(zones.map((zone) => zone.floor)).size, "fa-solid fa-building"],
+    ["Total Ruangan", zones.length, "fa-solid fa-door-open"],
     ["Total Meja", tables.length, "fa-solid fa-chair"],
-    ["Kapasitas", zones.reduce((total, zone) => total + Number(zone.capacity || 0), 0), "fa-solid fa-users"],
-    ["Maintenance", zones.filter((zone) => zone.status === "maintenance").length, "fa-solid fa-screwdriver-wrench"],
+    ["Ruangan Kasir", layouts.filter((layout) => layout.hasCashier).length, "fa-solid fa-cash-register"],
   ];
 
-  const saveZone = async () => {
+  const openFloorModal = () => {
+    setRoomForm({
+      ...emptyRoom,
+      mode: "floor",
+      floor: `Lantai ${new Set(zones.map((zone) => zone.floor)).size + 1}`,
+      room: "Ruangan Baru",
+    });
+  };
+
+  const openRoomModal = (floor = zones[0]?.floor || "Lantai 1") => {
+    setRoomForm({
+      ...emptyRoom,
+      floor,
+      mode: "room",
+    });
+  };
+
+  const openTableModal = (zone, table = null) => {
+    if (table) {
+      setTableForm({
+        id: table.id,
+        zoneId: String(zone.id),
+        floor: zone.floor,
+        room: zone.room,
+        code: table.code,
+        capacity: table.capacity,
+        shape: table.shape,
+        status: table.status,
+        x: table.x,
+        y: table.y,
+        width: table.width,
+        height: table.height,
+        rotation: table.rotation,
+      });
+      return;
+    }
+
+    setTableForm({
+      ...emptyTable,
+      zoneId: String(zone.id),
+      floor: zone.floor,
+      room: zone.room,
+      code: `${slugCode(zone.room, "T")}-${zone.tableCount + 1}`,
+    });
+  };
+
+  const saveRoom = async () => {
     setIsSaving(true);
     setNotice({ type: "", message: "" });
 
     try {
       const payload = {
-        code: editingZone.code,
-        floor: editingZone.floor,
-        room: editingZone.room,
-        type: editingZone.type,
-        capacity: Number(editingZone.capacity || 0),
-        status: editingZone.status,
+        code: roomForm.code || slugCode(`${roomForm.floor}-${roomForm.room}`, "ZONE"),
+        floor: roomForm.floor,
+        room: roomForm.room,
+        type: roomForm.type,
+        capacity: Number(roomForm.capacity || 0),
+        status: roomForm.status,
       };
 
-      if (editingZone.id) {
-        await apiFetch(`/api/admin/zones/${editingZone.id}`, {
+      if (roomForm.id) {
+        await apiFetch(`/api/admin/zones/${roomForm.id}`, {
           method: "PATCH",
           body: JSON.stringify(payload),
         });
@@ -124,9 +234,9 @@ export default function AdminZonesPage() {
         });
       }
 
-      setEditingZone(null);
+      setRoomForm(null);
       await loadData();
-      setNotice({ type: "success", message: "Zona berhasil disimpan." });
+      setNotice({ type: "success", message: "Data lantai dan ruangan berhasil disimpan." });
     } catch (error) {
       setNotice({ type: "error", message: error.message });
     } finally {
@@ -134,7 +244,57 @@ export default function AdminZonesPage() {
     }
   };
 
-  const toggleStatus = async (zone) => {
+  const saveTable = async () => {
+    const zone = zones.find((item) => String(item.id) === String(tableForm.zoneId));
+
+    if (!zone) {
+      setNotice({ type: "error", message: "Pilih ruangan terlebih dahulu." });
+      return;
+    }
+
+    setIsSaving(true);
+    setNotice({ type: "", message: "" });
+
+    try {
+      const existingCount = tables.filter((table) => Number(table.zoneId) === Number(zone.id)).length;
+      const payload = {
+        code: tableForm.code,
+        zoneId: Number(zone.id),
+        floor: zone.floor,
+        room: zone.room,
+        capacity: Number(tableForm.capacity || 1),
+        shape: tableForm.shape,
+        x: Number(tableForm.x ?? 120 + (existingCount % 3) * 86),
+        y: Number(tableForm.y ?? 110 + Math.floor(existingCount / 3) * 82),
+        width: Number(tableForm.width ?? (tableForm.shape === "rectangle" ? 72 : 48)),
+        height: Number(tableForm.height ?? 48),
+        rotation: Number(tableForm.rotation || 0),
+        status: tableForm.status,
+      };
+
+      if (tableForm.id) {
+        await apiFetch(`/api/admin/tables/${tableForm.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await apiFetch("/api/admin/tables", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+
+      setTableForm(null);
+      await loadData();
+      setNotice({ type: "success", message: "Data meja berhasil disimpan." });
+    } catch (error) {
+      setNotice({ type: "error", message: error.message });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const toggleRoomStatus = async (zone) => {
     const nextStatus = zone.status === "active" ? "maintenance" : "active";
     try {
       await apiFetch(`/api/admin/zones/${zone.id}`, {
@@ -150,7 +310,7 @@ export default function AdminZonesPage() {
   return (
     <AdminShell
       title="Zona & Lantai"
-      description="Kelola struktur lantai, ruangan, zona, kapasitas, dan status area restoran untuk mendukung editor denah."
+      description="Kelola struktur lantai, ruangan, dan meja. Pengaturan posisi visual dilakukan penuh dari Editor Denah."
     >
       {notice.message ? (
         <div
@@ -180,139 +340,177 @@ export default function AdminZonesPage() {
         ))}
       </div>
 
-      <section className="mt-6 grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="font-bold text-slate-950">Struktur Restoran</h3>
-          <p className="mt-1 text-sm text-slate-500">
-            Struktur lantai dan ruangan dari backend.
-          </p>
-
-          <div className="mt-6 grid gap-4">
-            {["Lantai 1", "Lantai 2"].map((floor) => (
-              <div key={floor} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center gap-3">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-md bg-white text-teal-700 shadow-sm">
-                    <i className="fa-solid fa-building" aria-hidden="true" />
-                  </span>
-                  <h4 className="font-semibold text-slate-950">{floor}</h4>
-                </div>
-                <div className="mt-4 grid gap-2">
-                  {zonesWithTableCount
-                    .filter((zone) => zone.floor === floor)
-                    .map((zone) => (
-                      <div
-                        key={zone.id}
-                        className="flex items-center justify-between rounded-md bg-white px-3 py-2 text-sm"
-                      >
-                        <span className="font-medium text-slate-700">{zone.room}</span>
-                        <span className="text-xs text-slate-500">{zone.tables} meja</span>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            ))}
+      <section className="mt-6 rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="grid gap-4 border-b border-slate-200 p-5 lg:grid-cols-[1fr_190px_auto_auto] lg:items-end">
+          <div>
+            <h3 className="font-bold text-slate-950">Struktur Lantai dan Ruangan</h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Setiap lantai berisi ruangan, dan setiap ruangan memiliki daftar meja yang bisa ditambah atau diedit.
+            </p>
           </div>
+          <CustomSelect label="Filter Lantai" value={selectedFloor} onChange={setSelectedFloor} options={floorOptions} />
+          <button
+            type="button"
+            onClick={openFloorModal}
+            className="inline-flex h-12 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-800 transition hover:border-teal-300 hover:text-teal-700"
+          >
+            <i className="fa-solid fa-building-circle-arrow-right" aria-hidden="true" />
+            Tambah Lantai
+          </button>
+          <button
+            type="button"
+            onClick={() => openRoomModal(selectedFloor === "all" ? zones[0]?.floor : selectedFloor)}
+            className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-teal-600 px-5 text-sm font-semibold text-white transition hover:bg-teal-700"
+          >
+            <i className="fa-solid fa-plus" aria-hidden="true" />
+            Tambah Ruangan
+          </button>
         </div>
 
-        <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="grid gap-4 border-b border-slate-200 p-5 lg:grid-cols-[1fr_170px_170px_auto] lg:items-end">
-            <div>
-              <h3 className="font-bold text-slate-950">Daftar Zona</h3>
-              <p className="mt-1 text-sm text-slate-500">
-                Atur metadata area sebelum meja ditempatkan pada denah.
-              </p>
+        <div className="grid gap-5 p-5">
+          {isLoading ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center font-semibold text-slate-500">
+              Memuat struktur restoran...
             </div>
-            <CustomSelect label="Lantai" value={floorFilter} onChange={setFloorFilter} options={floorOptions} />
-            <CustomSelect label="Status" value={statusFilter} onChange={setStatusFilter} options={statusOptions} />
-            <button
-              type="button"
-              onClick={() => setEditingZone(emptyZone)}
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-teal-600 px-5 text-sm font-semibold text-white transition hover:bg-teal-700"
-            >
-              <i className="fa-solid fa-plus" aria-hidden="true" />
-              Tambah Zona
-            </button>
-          </div>
+          ) : null}
 
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[780px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                <tr>
-                  <th className="px-5 py-3 font-semibold">Kode</th>
-                  <th className="px-5 py-3 font-semibold">Ruangan</th>
-                  <th className="px-5 py-3 font-semibold">Tipe</th>
-                  <th className="px-5 py-3 font-semibold">Meja</th>
-                  <th className="px-5 py-3 font-semibold">Kapasitas</th>
-                  <th className="px-5 py-3 font-semibold">Status</th>
-                  <th className="px-5 py-3 font-semibold">Aksi</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {isLoading ? (
-                  <tr>
-                    <td colSpan="7" className="px-5 py-8 text-center font-semibold text-slate-500">
-                      Memuat data zona...
-                    </td>
-                  </tr>
-                ) : null}
+          {!isLoading &&
+            floors.map((floor) => (
+              <article key={floor.floor} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-white text-teal-700 shadow-sm">
+                      <i className="fa-solid fa-building" aria-hidden="true" />
+                    </span>
+                    <div>
+                      <h4 className="font-bold text-slate-950">{floor.floor}</h4>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {floor.rooms.length} ruangan - {floor.tableCount} meja
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openRoomModal(floor.floor)}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:border-teal-300 hover:text-teal-700"
+                  >
+                    <i className="fa-solid fa-door-open" aria-hidden="true" />
+                    Tambah Ruangan
+                  </button>
+                </div>
 
-                {!isLoading &&
-                  filteredZones.map((zone) => (
-                    <tr key={zone.id}>
-                      <td className="px-5 py-4 font-bold text-slate-950">{zone.code}</td>
-                      <td className="px-5 py-4">
-                        <p className="font-medium text-slate-900">{zone.room}</p>
-                        <p className="mt-1 text-xs text-slate-500">{zone.floor}</p>
-                      </td>
-                      <td className="px-5 py-4 text-slate-600">{zone.type}</td>
-                      <td className="px-5 py-4 text-slate-600">{zone.tables}</td>
-                      <td className="px-5 py-4 text-slate-600">{zone.capacity} orang</td>
-                      <td className="px-5 py-4">
-                        <span className={`rounded-md px-3 py-1 text-xs font-semibold ${statusClass[zone.status]}`}>
-                          {statusLabels[zone.status] ?? zone.status}
-                        </span>
-                      </td>
-                      <td className="px-5 py-4">
+                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  {floor.rooms.map((room) => (
+                    <section key={room.id} className="rounded-lg border border-slate-200 bg-white p-4">
+                      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h5 className="font-bold text-slate-950">{room.room}</h5>
+                            <span className={`rounded-md px-2 py-1 text-xs font-semibold ${statusClass[room.status]}`}>
+                              {statusLabels[room.status] ?? room.status}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm text-slate-500">
+                            {room.code} - {room.type} - {room.tableCount} meja
+                          </p>
+                          <p className="mt-1 text-xs font-semibold text-slate-500">
+                            Kasir: {room.layout.hasCashier ? "Ada" : "Tidak ada"} - Pintu ({room.layout.doorX}, {room.layout.doorY})
+                          </p>
+                        </div>
                         <div className="flex gap-2">
                           <button
                             type="button"
-                            onClick={() => setEditingZone(zone)}
-                            className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-700"
+                            onClick={() => setRoomForm({ ...room, mode: "edit" })}
+                            className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition hover:border-teal-300 hover:text-teal-700"
+                            aria-label="Edit ruangan"
                           >
-                            Edit
+                            <i className="fa-regular fa-pen-to-square" aria-hidden="true" />
                           </button>
                           <button
                             type="button"
-                            onClick={() => toggleStatus(zone)}
-                            className="rounded-md bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
+                            onClick={() => toggleRoomStatus(room)}
+                            className="flex h-9 w-9 items-center justify-center rounded-md bg-slate-100 text-slate-700 transition hover:bg-slate-200"
+                            aria-label="Toggle status ruangan"
                           >
-                            Toggle
+                            <i className="fa-solid fa-repeat" aria-hidden="true" />
                           </button>
                         </div>
-                      </td>
-                    </tr>
+                      </div>
+
+                      <div className="mt-4 grid gap-2">
+                        {room.tables.slice(0, 4).map((table) => (
+                          <div key={table.id} className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2 text-sm">
+                            <span className="font-semibold text-slate-800">{table.code}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-slate-500">{table.capacity} kursi</span>
+                              <span className={`rounded-md px-2 py-1 text-[11px] font-semibold ${tablePillClass[table.status] ?? tablePillClass.inactive}`}>
+                                {tableStatusLabels[table.status] ?? table.status}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => openTableModal(room, table)}
+                                className="flex h-7 w-7 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition hover:border-teal-300 hover:text-teal-700"
+                                aria-label={`Edit meja ${table.code}`}
+                              >
+                                <i className="fa-regular fa-pen-to-square text-xs" aria-hidden="true" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        {room.tables.length > 4 ? (
+                          <p className="text-xs font-semibold text-slate-500">
+                            +{room.tables.length - 4} meja lainnya
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                        <button
+                          type="button"
+                          onClick={() => openTableModal(room)}
+                          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-teal-600 px-4 text-sm font-semibold text-white transition hover:bg-teal-700"
+                        >
+                          <i className="fa-solid fa-chair" aria-hidden="true" />
+                          Tambah Meja
+                        </button>
+                        <a
+                          href="/admin/denah"
+                          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:border-teal-300 hover:text-teal-700"
+                        >
+                          <i className="fa-solid fa-object-group" aria-hidden="true" />
+                          Editor Denah
+                        </a>
+                      </div>
+                    </section>
                   ))}
-              </tbody>
-            </table>
-          </div>
+                </div>
+              </article>
+            ))}
+
+          {!isLoading && floors.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+              <p className="font-semibold text-slate-950">Belum ada lantai atau ruangan</p>
+              <p className="mt-2 text-sm text-slate-500">Tambahkan lantai pertama untuk mulai menyusun struktur restoran.</p>
+            </div>
+          ) : null}
         </div>
       </section>
 
-      {editingZone ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-5">
-          <div className="w-full max-w-xl rounded-lg bg-white p-6 shadow-2xl shadow-slate-950/20">
+      {roomForm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-5 py-8">
+          <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg bg-white p-6 shadow-2xl shadow-slate-950/20">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-sm font-semibold uppercase text-teal-700">Form Zona</p>
+                <p className="text-sm font-semibold uppercase text-teal-700">Form Ruangan</p>
                 <h2 className="mt-2 text-2xl font-bold text-slate-950">
-                  {editingZone.id ? `Edit ${editingZone.room}` : "Tambah Zona"}
+                  {roomForm.id ? `Edit ${roomForm.room}` : roomForm.mode === "floor" ? "Tambah Lantai" : "Tambah Ruangan"}
                 </h2>
               </div>
               <button
                 type="button"
-                onClick={() => setEditingZone(null)}
+                onClick={() => setRoomForm(null)}
                 className="flex h-9 w-9 items-center justify-center rounded-md bg-slate-100 text-slate-700 transition hover:bg-slate-200"
-                aria-label="Tutup form zona"
+                aria-label="Tutup form ruangan"
               >
                 <i className="fa-solid fa-xmark" aria-hidden="true" />
               </button>
@@ -320,58 +518,136 @@ export default function AdminZonesPage() {
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
               <FieldInput
-                label="Kode zona"
-                icon="fa-solid fa-hashtag"
-                value={editingZone.code}
-                onChange={(event) => setEditingZone({ ...editingZone, code: event.target.value })}
-                placeholder="Z-01"
+                label="Nama lantai"
+                icon="fa-solid fa-building"
+                value={roomForm.floor}
+                onChange={(event) => setRoomForm({ ...roomForm, floor: event.target.value })}
+                placeholder="Lantai 1"
               />
               <FieldInput
                 label="Nama ruangan"
-                icon="fa-regular fa-square"
-                value={editingZone.room}
-                onChange={(event) => setEditingZone({ ...editingZone, room: event.target.value })}
+                icon="fa-solid fa-door-open"
+                value={roomForm.room}
+                onChange={(event) => setRoomForm({ ...roomForm, room: event.target.value })}
                 placeholder="Main Hall"
               />
               <FieldInput
-                label="Tipe zona"
+                label="Kode ruangan"
+                icon="fa-solid fa-hashtag"
+                value={roomForm.code}
+                onChange={(event) => setRoomForm({ ...roomForm, code: event.target.value })}
+                placeholder="LT1-MAIN"
+              />
+              <FieldInput
+                label="Tipe ruangan"
                 icon="fa-solid fa-tag"
-                value={editingZone.type}
-                onChange={(event) => setEditingZone({ ...editingZone, type: event.target.value })}
+                value={roomForm.type}
+                onChange={(event) => setRoomForm({ ...roomForm, type: event.target.value })}
                 placeholder="Indoor"
               />
               <FieldInput
                 label="Kapasitas"
                 type="number"
                 icon="fa-solid fa-users"
-                value={editingZone.capacity}
-                onChange={(event) => setEditingZone({ ...editingZone, capacity: event.target.value })}
-              />
-              <CustomSelect
-                label="Lantai"
-                value={editingZone.floor}
-                onChange={(floor) => setEditingZone((current) => ({ ...current, floor }))}
-                options={floorOptions.filter((option) => option.value !== "all")}
+                value={roomForm.capacity}
+                onChange={(event) => setRoomForm({ ...roomForm, capacity: event.target.value })}
               />
               <CustomSelect
                 label="Status"
-                value={editingZone.status}
-                onChange={(status) => setEditingZone((current) => ({ ...current, status }))}
-                options={editStatusOptions}
+                value={roomForm.status}
+                onChange={(status) => setRoomForm((current) => ({ ...current, status }))}
+                options={statusOptions}
               />
             </div>
 
             <button
               type="button"
               disabled={isSaving}
-              onClick={saveZone}
+              onClick={saveRoom}
               className="mt-6 inline-flex h-11 w-full items-center justify-center rounded-md bg-teal-600 px-5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              {isSaving ? "Menyimpan..." : "Simpan ke Backend"}
+              {isSaving ? "Menyimpan..." : "Simpan Ruangan"}
             </button>
           </div>
         </div>
       ) : null}
+
+      {tableForm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-5 py-8">
+          <div className="w-full max-w-xl rounded-lg bg-white p-6 shadow-2xl shadow-slate-950/20">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold uppercase text-teal-700">Form Meja</p>
+                <h2 className="mt-2 text-2xl font-bold text-slate-950">
+                  {tableForm.id ? "Edit Meja" : "Tambah Meja"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">{tableForm.floor} - {tableForm.room}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTableForm(null)}
+                className="flex h-9 w-9 items-center justify-center rounded-md bg-slate-100 text-slate-700 transition hover:bg-slate-200"
+                aria-label="Tutup form meja"
+              >
+                <i className="fa-solid fa-xmark" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <FieldInput
+                label="Kode meja"
+                icon="fa-solid fa-hashtag"
+                value={tableForm.code}
+                onChange={(event) => setTableForm({ ...tableForm, code: event.target.value })}
+                placeholder="A-01"
+              />
+              <FieldInput
+                label="Kapasitas"
+                type="number"
+                icon="fa-solid fa-users"
+                value={tableForm.capacity}
+                onChange={(event) => setTableForm({ ...tableForm, capacity: event.target.value })}
+              />
+              <CustomSelect
+                label="Bentuk"
+                value={tableForm.shape}
+                onChange={(shape) => setTableForm((current) => ({ ...current, shape }))}
+                options={shapeOptions}
+              />
+              <CustomSelect
+                label="Status"
+                value={tableForm.status}
+                onChange={(status) => setTableForm((current) => ({ ...current, status }))}
+                options={tableStatusOptions}
+              />
+              <FieldInput
+                label="Posisi X"
+                type="number"
+                icon="fa-solid fa-arrows-left-right"
+                value={tableForm.x ?? ""}
+                onChange={(event) => setTableForm({ ...tableForm, x: event.target.value })}
+              />
+              <FieldInput
+                label="Posisi Y"
+                type="number"
+                icon="fa-solid fa-arrows-up-down"
+                value={tableForm.y ?? ""}
+                onChange={(event) => setTableForm({ ...tableForm, y: event.target.value })}
+              />
+            </div>
+
+            <button
+              type="button"
+              disabled={isSaving}
+              onClick={saveTable}
+              className="mt-6 inline-flex h-11 w-full items-center justify-center rounded-md bg-teal-600 px-5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {isSaving ? "Menyimpan..." : tableForm.id ? "Simpan Perubahan Meja" : "Tambah Meja"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
     </AdminShell>
   );
 }

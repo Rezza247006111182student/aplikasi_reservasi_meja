@@ -60,8 +60,9 @@ export const reservationStatusLabels = {
 
 export const tableStatusLabels = {
   available: "Tersedia",
-  reserved: "Dipesan",
-  booked: "Dipesan",
+  reserved: "Telah dipesan",
+  booked: "Sedang dipakai",
+  unavailable: "Kapasitas kurang",
   inactive: "Tidak aktif",
 };
 

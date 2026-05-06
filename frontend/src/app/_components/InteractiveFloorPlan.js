@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "../_lib/api";
 import CustomSelect from "./CustomSelect";
 
@@ -15,7 +15,7 @@ const floorPlans = [
         description: "Area utama dekat kasir dan akses dapur.",
         tables: [
           { id: "A-01", x: 152, y: 78, seats: 4, size: "md", shape: "round", status: "available" },
-          { id: "A-02", x: 256, y: 78, seats: 4, size: "md", shape: "round", status: "booked" },
+          { id: "A-02", x: 256, y: 78, seats: 4, size: "md", shape: "round", status: "reserved" },
           { id: "A-03", x: 344, y: 116, seats: 4, size: "md", shape: "round", status: "available" },
           { id: "B-01", x: 96, y: 176, seats: 6, size: "lg", shape: "rect", rotation: 0, status: "available" },
           { id: "B-02", x: 248, y: 172, seats: 6, size: "lg", shape: "rect", rotation: 0, status: "inactive" },
@@ -76,18 +76,25 @@ const statusStyles = {
     pill: "bg-green-100 text-green-700",
   },
   reserved: {
-    fill: "#fecaca",
-    stroke: "#dc2626",
-    text: "#991b1b",
-    label: "Dipesan",
-    pill: "bg-red-100 text-red-700",
+    fill: "#fde68a",
+    stroke: "#f59e0b",
+    text: "#92400e",
+    label: "Telah dipesan",
+    pill: "bg-amber-100 text-amber-700",
   },
   booked: {
     fill: "#fecaca",
     stroke: "#dc2626",
     text: "#991b1b",
-    label: "Dipesan",
+    label: "Sedang dipakai",
     pill: "bg-red-100 text-red-700",
+  },
+  unavailable: {
+    fill: "#f1f5f9",
+    stroke: "#64748b",
+    text: "#334155",
+    label: "Kapasitas kurang",
+    pill: "bg-slate-100 text-slate-700",
   },
   inactive: {
     fill: "#e2e8f0",
@@ -98,31 +105,64 @@ const statusStyles = {
   },
 };
 
-const getTableSize = (table) => {
-  const width = Number(table.width || 48);
-  if (width >= 82) return "xl";
-  if (width >= 68) return "lg";
-  if (width <= 44) return "sm";
-  return "md";
+const defaultRoomLayout = {
+  hasCashier: false,
+  cashierX: 500,
+  cashierY: 342,
+  cashierWidth: 64,
+  cashierHeight: 42,
+  cashierRotation: 0,
+  doorX: 67,
+  doorY: 63,
+  doorWidth: 62,
+  doorHeight: 54,
+  doorRotation: 0,
 };
 
 const normalizeShape = (shape) => (shape === "rectangle" ? "rect" : "round");
+const labelToId = (value) => String(value || "").toLowerCase().replaceAll(" ", "-");
 
-const buildFloorPlans = (tables) => {
+const normalizeLayout = (layout) => ({
+  ...defaultRoomLayout,
+  ...(layout ?? {}),
+  hasCashier: Boolean(layout?.hasCashier),
+  cashierX: Number(layout?.cashierX ?? defaultRoomLayout.cashierX),
+  cashierY: Number(layout?.cashierY ?? defaultRoomLayout.cashierY),
+  cashierWidth: Number(layout?.cashierWidth ?? defaultRoomLayout.cashierWidth),
+  cashierHeight: Number(layout?.cashierHeight ?? defaultRoomLayout.cashierHeight),
+  cashierRotation: Number(layout?.cashierRotation ?? defaultRoomLayout.cashierRotation),
+  doorX: Number(layout?.doorX ?? defaultRoomLayout.doorX),
+  doorY: Number(layout?.doorY ?? defaultRoomLayout.doorY),
+  doorWidth: Number(layout?.doorWidth ?? defaultRoomLayout.doorWidth),
+  doorHeight: Number(layout?.doorHeight ?? defaultRoomLayout.doorHeight),
+  doorRotation: Number(layout?.doorRotation ?? defaultRoomLayout.doorRotation),
+});
+
+const buildFloorPlans = (tables, layouts = []) => {
+  const layoutsByZoneId = new Map(
+    layouts.map((layout) => [Number(layout.zoneId), normalizeLayout(layout)]),
+  );
   const grouped = tables.reduce((acc, table) => {
     const floor = table.floor || "Lantai 1";
     const room = table.room || "Main Hall";
 
     if (!acc[floor]) acc[floor] = {};
-    if (!acc[floor][room]) acc[floor][room] = [];
+    if (!acc[floor][room]) {
+      acc[floor][room] = {
+        zoneId: table.zoneId,
+        layout: layoutsByZoneId.get(Number(table.zoneId)) ?? normalizeLayout(),
+        tables: [],
+      };
+    }
 
-    acc[floor][room].push({
+    acc[floor][room].tables.push({
       id: table.code,
       tableId: table.id,
       x: Number(table.x),
       y: Number(table.y),
+      width: Number(table.width || 48),
+      height: Number(table.height || 48),
       seats: table.capacity,
-      size: getTableSize(table),
       shape: normalizeShape(table.shape),
       rotation: Number(table.rotation || 0),
       status: table.status,
@@ -134,26 +174,59 @@ const buildFloorPlans = (tables) => {
   const plans = Object.entries(grouped).map(([floor, rooms]) => ({
     id: floor.toLowerCase().replaceAll(" ", "-"),
     label: floor,
-    rooms: Object.entries(rooms).map(([room, roomTables]) => ({
+    rooms: Object.entries(rooms).map(([room, roomData]) => ({
       id: room.toLowerCase().replaceAll(" ", "-"),
       label: room,
       description: `Area ${room} pada ${floor}.`,
-      tables: roomTables,
+      zoneId: roomData.zoneId,
+      layout: roomData.layout,
+      tables: roomData.tables,
     })),
   }));
 
-  return plans.length ? plans : floorPlans;
+  return plans;
 };
 
-const tableSizes = {
-  sm: { radius: 15, rectW: 34, rectH: 24, chair: 7, labelY: 39 },
-  md: { radius: 19, rectW: 44, rectH: 30, chair: 8, labelY: 46 },
-  lg: { radius: 23, rectW: 58, rectH: 36, chair: 9, labelY: 52 },
-  xl: { radius: 28, rectW: 72, rectH: 42, chair: 10, labelY: 60 },
+const createEmptyPlans = (query) => {
+  const floorLabel = query?.floor && query.floor !== "all" ? query.floor : "Lantai";
+  const roomLabel = query?.room && query.room !== "all" ? query.room : "Ruangan";
+
+  return [
+    {
+      id: labelToId(floorLabel),
+      label: floorLabel,
+      rooms: [
+        {
+          id: labelToId(roomLabel),
+          label: roomLabel,
+          description: "Belum ada meja pada filter ini.",
+          layout: normalizeLayout(),
+          tables: [],
+        },
+      ],
+    },
+  ];
 };
 
 function TableIcon({ table, style, isSelected, onSelect }) {
-  const size = tableSizes[table.size] ?? tableSizes.md;
+  const width = Number(table.width || 48);
+  const height = Number(table.height || 48);
+  const radius = Math.max(16, Math.min(width, height) / 2);
+  const size = table.shape === "rect"
+    ? {
+        radius,
+        rectW: width,
+        rectH: height,
+        chair: Math.max(6, Math.min(10, Math.min(width, height) / 5)),
+        labelY: height / 2 + 18,
+      }
+    : {
+        radius,
+        rectW: width,
+        rectH: height,
+        chair: Math.max(6, Math.min(10, radius / 3)),
+        labelY: radius + 25,
+      };
   const rotation = table.rotation ?? 0;
   const selectedStroke = isSelected ? "#0f766e" : style.stroke;
   const selectedWidth = isSelected ? 4 : 2;
@@ -261,39 +334,173 @@ function TableIcon({ table, style, isSelected, onSelect }) {
   );
 }
 
+function DoorIcon({ layout }) {
+  const width = Number(layout.doorWidth || defaultRoomLayout.doorWidth);
+  const height = Number(layout.doorHeight || defaultRoomLayout.doorHeight);
+  const iconScale = Math.max(0.6, Math.min(1.8, Math.min(width / 62, height / 54)));
+
+  return (
+    <g
+      transform={`translate(${layout.doorX} ${layout.doorY}) rotate(${Number(layout.doorRotation || 0)})`}
+      aria-label="Pintu masuk"
+    >
+      <rect
+        x={-width / 2}
+        y={-height / 2}
+        width={width}
+        height={height}
+        rx="8"
+        fill="#fef3c7"
+        stroke="#f59e0b"
+        strokeWidth="2"
+      />
+      <g transform={`scale(${iconScale})`}>
+        <path d="M-9 15V-15H13V15" fill="#fff7ed" stroke="#92400e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M13 -15L21 -9V21L13 15Z" fill="#fde68a" stroke="#92400e" strokeWidth="2" strokeLinejoin="round" />
+        <circle cx="8" cy="0" r="1.8" fill="#92400e" />
+      </g>
+      <text x="0" y={height / 2 + 13} textAnchor="middle" fontSize="9" fontWeight="700" fill="#92400e">
+        PINTU
+      </text>
+    </g>
+  );
+}
+
+function CashierIcon({ layout }) {
+  const width = Number(layout.cashierWidth || defaultRoomLayout.cashierWidth);
+  const height = Number(layout.cashierHeight || defaultRoomLayout.cashierHeight);
+
+  if (!layout.hasCashier) return null;
+
+  return (
+    <g
+      transform={`translate(${layout.cashierX} ${layout.cashierY}) rotate(${Number(layout.cashierRotation || 0)})`}
+      aria-label="Kasir"
+    >
+      <rect
+        x={-width / 2}
+        y={-height / 2}
+        width={width}
+        height={height}
+        rx="6"
+        fill="#e0f2fe"
+        stroke="#0284c7"
+      />
+      <text x="0" y="5" textAnchor="middle" fontSize="10" fontWeight="700" fill="#0369a1">
+        KASIR
+      </text>
+    </g>
+  );
+}
+
 export default function InteractiveFloorPlan({
   compact = false,
   minimal = false,
+  availabilityQuery,
+  onAvailabilityChange,
   onConfirmSelection,
   onSelectionChange,
 }) {
   const [plans, setPlans] = useState(floorPlans);
   const [isLoading, setIsLoading] = useState(true);
   const [floorId, setFloorId] = useState(floorPlans[0].id);
-  const floor = plans.find((item) => item.id === floorId) ?? plans[0];
-  const [roomId, setRoomId] = useState(floor.rooms[0].id);
+  const floor = plans.find((item) => item.id === floorId) ?? plans[0] ?? createEmptyPlans()[0];
+  const [roomId, setRoomId] = useState(floor.rooms[0]?.id ?? "");
+  const floorIdRef = useRef(floorPlans[0].id);
+  const roomIdRef = useRef(floor.rooms[0].id);
+  const selectedTableIdRef = useRef(floor.rooms[0].tables[0].id);
 
   const activeRoom = useMemo(() => {
     return floor.rooms.find((room) => room.id === roomId) ?? floor.rooms[0];
   }, [floor, roomId]);
 
-  const [selectedTableId, setSelectedTableId] = useState(activeRoom.tables[0].id);
+  const [selectedTableId, setSelectedTableId] = useState(activeRoom.tables[0]?.id ?? "");
   const selectedTable =
     activeRoom.tables.find((table) => table.id === selectedTableId) ??
-    activeRoom.tables[0];
+    activeRoom.tables[0] ??
+    null;
   const selectedStyle = statusStyles[selectedTable?.status] ?? statusStyles.available;
+  const activeLayout = activeRoom.layout ?? normalizeLayout();
+
+  useEffect(() => {
+    floorIdRef.current = floorId;
+  }, [floorId]);
+
+  useEffect(() => {
+    roomIdRef.current = roomId;
+  }, [roomId]);
+
+  useEffect(() => {
+    selectedTableIdRef.current = selectedTableId;
+  }, [selectedTableId]);
 
   useEffect(() => {
     let isMounted = true;
 
-    apiFetch("/api/tables")
-      .then((tables) => {
+    const params = new URLSearchParams();
+
+    if (availabilityQuery?.startTime && availabilityQuery?.endTime) {
+      params.set("startTime", availabilityQuery.startTime);
+      params.set("endTime", availabilityQuery.endTime);
+      if (availabilityQuery.guestCount) params.set("guestCount", availabilityQuery.guestCount);
+      if (availabilityQuery.floor && availabilityQuery.floor !== "all") params.set("floor", availabilityQuery.floor);
+      if (availabilityQuery.room && availabilityQuery.room !== "all") params.set("room", availabilityQuery.room);
+    }
+
+    const query = params.toString();
+
+    Promise.all([
+      apiFetch(`/api/tables${query ? `?${query}` : ""}`),
+      apiFetch("/api/room-layouts"),
+    ])
+      .then(([tables, layouts]) => {
         if (!isMounted) return;
-        const nextPlans = buildFloorPlans(tables);
-        setPlans(nextPlans);
-        setFloorId(nextPlans[0].id);
-        setRoomId(nextPlans[0].rooms[0].id);
-        setSelectedTableId(nextPlans[0].rooms[0].tables[0]?.id);
+        const nextPlans = buildFloorPlans(tables, layouts);
+        const resolvedPlans = nextPlans.length ? nextPlans : createEmptyPlans(availabilityQuery);
+        const desiredFloorId =
+          availabilityQuery?.floor && availabilityQuery.floor !== "all"
+            ? labelToId(availabilityQuery.floor)
+            : floorIdRef.current;
+        const desiredRoomId =
+          availabilityQuery?.room && availabilityQuery.room !== "all"
+            ? labelToId(availabilityQuery.room)
+            : roomIdRef.current;
+        const currentFloor =
+          resolvedPlans.find((item) => item.id === desiredFloorId) ?? resolvedPlans[0];
+        const currentRoom =
+          currentFloor.rooms.find((item) => item.id === desiredRoomId) ?? currentFloor.rooms[0];
+        const currentTable =
+          currentRoom.tables.find((item) => item.id === selectedTableIdRef.current) ??
+          currentRoom.tables[0] ??
+          null;
+
+        setPlans(resolvedPlans);
+        setFloorId(currentFloor.id);
+        setRoomId(currentRoom?.id ?? "");
+        setSelectedTableId(currentTable?.id);
+
+        onAvailabilityChange?.({
+          total: tables.length,
+          available: tables.filter((table) => table.status === "available").length,
+          reserved: tables.filter((table) => table.status === "reserved").length,
+          booked: tables.filter((table) => table.status === "booked").length,
+          inactive: tables.filter((table) => table.status === "inactive").length,
+          unavailable: tables.filter((table) => table.status === "unavailable").length,
+          tables: tables.map((table) => {
+            const style = statusStyles[table.status] ?? statusStyles.available;
+
+            return {
+              id: table.code,
+              tableId: table.id,
+              floor: table.floor,
+              room: table.room,
+              seats: table.capacity,
+              status: table.status,
+              statusLabel: style.label,
+              pill: style.pill,
+            };
+          }),
+        });
       })
       .catch(() => {
         if (!isMounted) return;
@@ -306,14 +513,14 @@ export default function InteractiveFloorPlan({
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [availabilityQuery, onAvailabilityChange]);
 
   const handleFloorChange = (nextFloorId) => {
     const nextFloor =
       plans.find((item) => item.id === nextFloorId) ?? plans[0];
 
     setFloorId(nextFloor.id);
-    setRoomId(nextFloor.rooms[0].id);
+    setRoomId(nextFloor.rooms[0]?.id ?? "");
     setSelectedTableId(nextFloor.rooms[0].tables[0]?.id);
   };
 
@@ -329,7 +536,7 @@ export default function InteractiveFloorPlan({
     ...table,
     floor: floor.label,
     room: activeRoom.label,
-    statusLabel: statusStyles[table.status]?.label ?? table.status,
+    statusLabel: statusStyles[table?.status]?.label ?? table?.status,
   });
 
   const handleTableSelect = (table) => {
@@ -372,30 +579,21 @@ export default function InteractiveFloorPlan({
       }`}
     >
       <svg
-        className={`h-auto rounded-md bg-white ${compact ? "w-full" : "min-w-[420px]"}`}
-        viewBox="0 0 420 340"
+        className={`h-auto rounded-md bg-white ${compact ? "w-full" : "min-w-[620px]"}`}
+        viewBox="0 0 620 420"
         role="img"
         aria-label={`Denah ${floor.label} ${activeRoom.label}`}
       >
-        <rect x="14" y="14" width="392" height="312" rx="10" fill="#f8fafc" stroke="#cbd5e1" strokeWidth="2" />
-        <g aria-label="Pintu masuk">
-          <rect x="28" y="24" width="46" height="46" rx="6" fill="#fef3c7" stroke="#f59e0b" strokeWidth="2" />
-          <path d="M43 62V33H61V62" fill="#fff7ed" stroke="#92400e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M61 33L67 38V67L61 62Z" fill="#fde68a" stroke="#92400e" strokeWidth="2" strokeLinejoin="round" />
-          <circle cx="57" cy="49" r="1.8" fill="#92400e" />
-          <path d="M35 75H68" stroke="#92400e" strokeWidth="2" strokeLinecap="round" />
-        </g>
-        <rect x="322" y="252" width="58" height="42" rx="5" fill="#e0f2fe" stroke="#0284c7" />
-        <text x="338" y="277" fontSize="10" fontWeight="700" fill="#0369a1">
-          KASIR
-        </text>
-        <path d="M112 30V310" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="7 8" />
-        <path d="M24 120H390" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="7 8" />
-        <path d="M24 220H390" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="7 8" />
+        <rect x="18" y="18" width="584" height="384" rx="12" fill="#f8fafc" stroke="#cbd5e1" strokeWidth="2" />
+        <path d="M164 36V384" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="8 10" />
+        <path d="M36 150H584" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="8 10" />
+        <path d="M36 276H584" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="8 10" />
+        <DoorIcon layout={activeLayout} />
+        <CashierIcon layout={activeLayout} />
 
         {activeRoom.tables.map((table) => {
-          const style = statusStyles[table.status];
-          const isSelected = table.id === selectedTable.id;
+          const style = statusStyles[table.status] ?? statusStyles.available;
+          const isSelected = table.id === selectedTable?.id;
 
           return (
             <TableIcon
@@ -408,6 +606,11 @@ export default function InteractiveFloorPlan({
           );
         })}
       </svg>
+      {!activeRoom.tables.length ? (
+        <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white p-5 text-center text-sm font-semibold text-slate-500">
+          Tidak ada meja pada lantai dan ruangan ini.
+        </div>
+      ) : null}
     </div>
   );
 
@@ -451,7 +654,7 @@ export default function InteractiveFloorPlan({
               Detail meja
             </p>
             <h3 className="mt-2 text-xl font-bold text-slate-950">
-              {selectedTable.id}
+              {selectedTable?.id ?? "-"}
             </h3>
             <p className="mt-1 text-sm text-slate-600">
               {floor.label} - {activeRoom.label}
@@ -460,7 +663,7 @@ export default function InteractiveFloorPlan({
               <div className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2">
                 <span className="text-slate-600">Kapasitas</span>
                 <span className="font-semibold text-slate-900">
-                  {selectedTable.seats} orang
+                  {selectedTable?.seats ?? 0} orang
                 </span>
               </div>
               <div className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2">
@@ -474,7 +677,7 @@ export default function InteractiveFloorPlan({
             {!compact ? (
               <button
                 type="button"
-                disabled={selectedTable.status !== "available"}
+                disabled={selectedTable?.status !== "available"}
                 className="mt-4 inline-flex h-11 w-full items-center justify-center rounded-md bg-teal-600 px-5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
                 onClick={() => onConfirmSelection?.(buildSelection())}
               >

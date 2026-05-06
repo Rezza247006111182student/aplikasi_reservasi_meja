@@ -84,6 +84,7 @@ export default async function HidanganPage() {
                     height={640}
                     sizes="(max-width: 1024px) 50vw, 280px"
                     className="h-full w-full object-cover"
+                    unoptimized={Boolean(dish.imageUrl)}
                   />
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 to-transparent p-4 text-white">
                     <p className="text-xs font-semibold uppercase text-teal-100">
@@ -167,6 +168,7 @@ export default async function HidanganPage() {
                               height={640}
                               sizes="(max-width: 768px) 100vw, 360px"
                               className="h-full w-full object-cover"
+                              unoptimized={Boolean(dish.imageUrl)}
                             />
                           </div>
                           <div className="flex flex-col p-5">

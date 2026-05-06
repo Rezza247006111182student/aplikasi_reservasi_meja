@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { apiFetch, clearAuthSession } from "../_lib/api";
+import { apiFetch, clearAuthSession, saveAuthSession } from "../_lib/api";
 
 const navItems = [
   { label: "Home", href: "/" },
@@ -21,6 +21,12 @@ export default function SiteHeader() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [user, setUser] = useState(null);
   const [notifications, setNotifications] = useState([]);
+  const [profileName, setProfileName] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isMarkingNotifications, setIsMarkingNotifications] = useState(false);
+  const [profileNotice, setProfileNotice] = useState({ type: "", message: "" });
+  const [notificationNotice, setNotificationNotice] = useState("");
+  const isAdmin = user?.role === "admin";
 
   const loadNotifications = useCallback(async (activeUser) => {
     if (!activeUser?.id) {
@@ -45,15 +51,18 @@ export default function SiteHeader() {
         const auth = JSON.parse(storedAuth);
         const activeUser = auth.user ?? null;
         setUser(activeUser);
+        setProfileName(activeUser?.name || "");
         void loadNotifications(activeUser);
         return;
       }
 
       const legacyUser = storedLegacyUser ? JSON.parse(storedLegacyUser) : null;
       setUser(legacyUser);
+      setProfileName(legacyUser?.name || "");
       void loadNotifications(legacyUser);
     } catch {
       setUser(null);
+      setProfileName("");
       setNotifications([]);
     }
   }, [loadNotifications]);
@@ -85,6 +94,55 @@ export default function SiteHeader() {
     setNotifications([]);
     setIsProfileOpen(false);
     setIsMenuOpen(false);
+    setProfileNotice({ type: "", message: "" });
+  };
+
+  const handleProfileSave = async (event) => {
+    event.preventDefault();
+    setIsSavingProfile(true);
+    setProfileNotice({ type: "", message: "" });
+
+    try {
+      const data = await apiFetch("/api/users/me", {
+        method: "PATCH",
+        body: JSON.stringify({ name: profileName }),
+      });
+      const storedAuth = JSON.parse(localStorage.getItem("nusantara_auth") || "{}");
+      const nextAuth = { ...storedAuth, user: data.user };
+
+      saveAuthSession(nextAuth);
+      setUser(data.user);
+      setProfileName(data.user.name);
+      setProfileNotice({ type: "success", message: "Nama profil berhasil diperbarui." });
+    } catch (error) {
+      setProfileNotice({ type: "error", message: error.message });
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const markAllNotificationsRead = async () => {
+    if (!user?.id || notifications.length === 0) {
+      setIsNotificationOpen(false);
+      return;
+    }
+
+    setIsMarkingNotifications(true);
+    setNotificationNotice("");
+
+    try {
+      await apiFetch(`/api/notifications/user/${user.id}/read-all`, {
+        method: "PATCH",
+      });
+      setNotifications((current) =>
+        current.map((notification) => ({ ...notification, is_read: true })),
+      );
+      setNotificationNotice("Semua notifikasi sudah ditandai dibaca.");
+    } catch (error) {
+      setNotificationNotice(error.message);
+    } finally {
+      setIsMarkingNotifications(false);
+    }
   };
 
   const profileButton = (
@@ -207,6 +265,23 @@ export default function SiteHeader() {
         </button>
       </nav>
 
+      {isAdmin ? (
+        <div className="border-t border-teal-100 bg-teal-50/90">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-5 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <span className="font-semibold text-teal-900">
+              Anda sedang melihat website pelanggan sebagai admin.
+            </span>
+            <Link
+              href="/admin"
+              className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-4 text-xs font-bold uppercase text-white transition hover:bg-teal-800 sm:w-fit"
+            >
+              <i className="fa-solid fa-arrow-left" aria-hidden="true" />
+              Kembali ke Admin
+            </Link>
+          </div>
+        </div>
+      ) : null}
+
       <div
         className={`fixed inset-0 z-40 bg-slate-950/40 transition-opacity duration-300 md:hidden ${
           isMenuOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
@@ -271,6 +346,16 @@ export default function SiteHeader() {
         </div>
 
         <div className="mt-auto grid gap-3 border-t border-slate-200 pt-5">
+          {isAdmin ? (
+            <Link
+              href="/admin"
+              onClick={() => setIsMenuOpen(false)}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white"
+            >
+              <i className="fa-solid fa-table-columns" aria-hidden="true" />
+              Panel Admin
+            </Link>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -332,7 +417,7 @@ export default function SiteHeader() {
                 Pengaturan User
               </p>
               <h2 className="mt-1 text-lg font-bold text-slate-950">
-                Profil Pelanggan
+                {isAdmin ? "Profil Admin" : "Profil Pelanggan"}
               </h2>
             </div>
 
@@ -353,7 +438,53 @@ export default function SiteHeader() {
               </div>
             </div>
 
+            <form onSubmit={handleProfileSave} className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-700">
+                  Username
+                </span>
+                <input
+                  type="text"
+                  value={profileName}
+                  onChange={(event) => setProfileName(event.target.value)}
+                  className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-900 outline-none transition hover:border-teal-300 focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
+                  placeholder="Nama pengguna"
+                />
+              </label>
+
+              {profileNotice.message ? (
+                <div
+                  className={`mt-3 rounded-md border px-3 py-2 text-xs font-semibold ${
+                    profileNotice.type === "success"
+                      ? "border-green-200 bg-green-50 text-green-700"
+                      : "border-red-200 bg-red-50 text-red-700"
+                  }`}
+                >
+                  {profileNotice.message}
+                </div>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={isSavingProfile}
+                className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-teal-600 px-4 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                <i className="fa-regular fa-pen-to-square" aria-hidden="true" />
+                {isSavingProfile ? "Menyimpan..." : "Simpan Username"}
+              </button>
+            </form>
+
             <div className="mt-4 grid gap-3">
+              {isAdmin ? (
+                <Link
+                  href="/admin"
+                  onClick={() => setIsProfileOpen(false)}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+                >
+                  <i className="fa-solid fa-table-columns" aria-hidden="true" />
+                  Masuk Panel Admin
+                </Link>
+              ) : null}
               <Link
                 href="/riwayat"
                 onClick={() => setIsProfileOpen(false)}
@@ -404,6 +535,12 @@ export default function SiteHeader() {
             </div>
 
             <div className="max-h-[65vh] overflow-y-auto p-3">
+              {notificationNotice ? (
+                <div className="mb-3 rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-semibold text-teal-800">
+                  {notificationNotice}
+                </div>
+              ) : null}
+
               {notifications.length ? notifications.map((notification) => (
                 <article
                   key={notification.id}
@@ -441,10 +578,11 @@ export default function SiteHeader() {
             <div className="border-t border-slate-200 p-4">
               <button
                 type="button"
-                onClick={() => setIsNotificationOpen(false)}
-                className="inline-flex h-10 w-full items-center justify-center rounded-md bg-teal-600 px-4 text-sm font-semibold text-white transition hover:bg-teal-700"
+                onClick={markAllNotificationsRead}
+                disabled={isMarkingNotifications || notifications.every((notification) => notification.is_read)}
+                className="inline-flex h-10 w-full items-center justify-center rounded-md bg-teal-600 px-4 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
-                Tandai Semua Dibaca
+                {isMarkingNotifications ? "Menandai..." : "Tandai Semua Dibaca"}
               </button>
             </div>
           </div>

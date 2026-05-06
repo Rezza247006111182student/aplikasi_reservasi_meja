@@ -36,6 +36,7 @@ const formatTimeRange = (start, end) => {
 export default function RiwayatPage() {
   const [user, setUser] = useState(null);
   const [reservations, setReservations] = useState([]);
+  const [selectedReservation, setSelectedReservation] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notice, setNotice] = useState({ type: "", message: "" });
 
@@ -81,8 +82,10 @@ export default function RiwayatPage() {
         ),
       );
       setNotice({ type: "success", message: "Reservasi berhasil dibatalkan." });
+      return true;
     } catch (error) {
       setNotice({ type: "error", message: error.message });
+      return false;
     }
   };
 
@@ -187,7 +190,11 @@ export default function RiwayatPage() {
                 </div>
 
                 <div className="mt-5 flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row">
-                  <button className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:border-teal-300 hover:text-teal-700">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedReservation(reservation)}
+                    className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:border-teal-300 hover:text-teal-700"
+                  >
                     Lihat Detail
                   </button>
                   {["pending", "confirmed"].includes(reservation.status) ? (
@@ -214,6 +221,68 @@ export default function RiwayatPage() {
           </div>
         </div>
       </section>
+
+      {selectedReservation ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-5 py-8">
+          <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg bg-white p-6 shadow-2xl shadow-slate-950/20">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold uppercase text-teal-700">
+                  Detail Reservasi
+                </p>
+                <h2 className="mt-2 text-2xl font-bold text-slate-950">
+                  {selectedReservation.code}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedReservation(null)}
+                className="flex h-9 w-9 items-center justify-center rounded-md bg-slate-100 text-slate-700 transition hover:bg-slate-200"
+                aria-label="Tutup detail reservasi"
+              >
+                <i className="fa-solid fa-xmark" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+              {[
+                ["Kode", selectedReservation.code],
+                ["Meja", selectedReservation.tableCode],
+                ["Lokasi", `${selectedReservation.floor} - ${selectedReservation.room}`],
+                ["Tanggal", formatDate(selectedReservation.reservationDate)],
+                ["Waktu", formatTimeRange(selectedReservation.startTime, selectedReservation.endTime)],
+                ["Jumlah tamu", `${selectedReservation.guestCount} orang`],
+                ["Status", reservationStatusLabels[selectedReservation.status] ?? selectedReservation.status],
+                ["Catatan", selectedReservation.note || "-"],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-4">
+                  <span className="text-slate-600">{label}</span>
+                  <span className="max-w-[65%] text-right font-semibold text-slate-950">{value}</span>
+                </div>
+              ))}
+            </div>
+
+            {["pending", "confirmed"].includes(selectedReservation.status) ? (
+              <div className="mt-6">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const isCancelled = await cancelReservation(selectedReservation);
+                    if (isCancelled) {
+                      setSelectedReservation((current) =>
+                        current ? { ...current, status: "cancelled" } : current,
+                      );
+                    }
+                  }}
+                  className="inline-flex h-11 w-full items-center justify-center rounded-md bg-red-50 px-5 text-sm font-semibold text-red-700 transition hover:bg-red-100"
+                >
+                  Batalkan Reservasi
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <SiteFooter />
     </main>

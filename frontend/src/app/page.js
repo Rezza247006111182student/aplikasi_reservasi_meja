@@ -163,7 +163,7 @@ export default function Home() {
                 <div className="relative h-44">
                   <Image
                     src={item.image}
-                    alt={`Foto dummy ${item.title}`}
+                    alt={`Foto ${item.title}`}
                     fill
                     sizes="(max-width: 768px) 100vw, 360px"
                     className="object-cover"

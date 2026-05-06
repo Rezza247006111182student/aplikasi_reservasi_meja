@@ -85,29 +85,25 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="grid gap-4 p-5 xl:grid-cols-[1fr_190px]">
+            <div className="grid gap-4 p-5 xl:grid-cols-[minmax(0,1fr)_220px]">
               <div>
                 <InteractiveFloorPlan compact minimal />
               </div>
 
-              <div className="grid content-start gap-3">
+              <div className="grid content-start gap-3 sm:grid-cols-2 xl:grid-cols-1">
                 {[
-                  ["Tersedia", "Meja hijau siap dipilih", "bg-green-50 text-green-700"],
-                  ["Dipesan", "Meja merah tidak tersedia", "bg-red-50 text-red-700"],
-                  ["Tidak aktif", "Meja abu-abu ditutup admin", "bg-slate-100 text-slate-700"],
-                ].map(([label, desc, className]) => (
-                  <div key={label} className={`rounded-lg border border-slate-200 p-4 ${className}`}>
+                  ["Tersedia", "bg-green-50 text-green-700"],
+                  ["Telah dipesan", "bg-amber-50 text-amber-700"],
+                  ["Sedang dipakai", "bg-red-50 text-red-700"],
+                  ["Tidak aktif", "bg-slate-100 text-slate-700"],
+                ].map(([label, className]) => (
+                  <div
+                    key={label}
+                    className={`flex min-h-14 items-center justify-center rounded-lg border border-slate-200 px-4 py-3 text-center ${className}`}
+                  >
                     <p className="text-sm font-bold">{label}</p>
-                    <p className="mt-1 text-xs leading-5 opacity-80">{desc}</p>
                   </div>
                 ))}
-
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">
-                  <p className="text-sm font-bold">Real-time ready</p>
-                  <p className="mt-1 text-xs leading-5">
-                    Status meja siap dihubungkan ke Socket.io saat backend tersedia.
-                  </p>
-                </div>
               </div>
             </div>
           </div>

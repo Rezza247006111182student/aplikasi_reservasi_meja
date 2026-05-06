@@ -1,12 +1,16 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const fs = require("fs/promises");
+const path = require("path");
 require("dotenv").config();
 
 const db = require("./db");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const publicDir = path.join(__dirname, "public");
+const uploadDir = path.join(publicDir, "uploads", "menus");
 
 const allowedOrigins = [process.env.FRONTEND_URL, "http://localhost:3000"].filter(Boolean);
 
@@ -18,7 +22,8 @@ app.use(
     },
   }),
 );
-app.use(express.json());
+app.use(express.json({ limit: "6mb" }));
+app.use("/uploads", express.static(path.join(publicDir, "uploads")));
 
 const asyncHandler = (handler) => async (req, res, next) => {
   try {
@@ -30,6 +35,8 @@ const asyncHandler = (handler) => async (req, res, next) => {
 
 const ok = (res, data, message = "Berhasil") => res.json({ message, data });
 const authSecret = process.env.AUTH_TOKEN_SECRET || "dev-reservasi-meja-secret";
+const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const maxImageUploadSize = 2 * 1024 * 1024;
 
 const base64UrlEncode = (value) =>
   Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -199,6 +206,72 @@ const generateReservationCode = () => {
   return `RSV-${date}-${random}`;
 };
 
+const sanitizeFileName = (value) =>
+  String(value || "menu")
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48) || "menu";
+
+const ensureRoomLayoutsTable = async () => {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS room_layouts (
+      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      zone_id BIGINT NOT NULL UNIQUE,
+      has_cashier BOOLEAN NOT NULL DEFAULT FALSE,
+      cashier_x DECIMAL(10,2) NOT NULL DEFAULT 330,
+      cashier_y DECIMAL(10,2) NOT NULL DEFAULT 260,
+      cashier_width DECIMAL(10,2) NOT NULL DEFAULT 64,
+      cashier_height DECIMAL(10,2) NOT NULL DEFAULT 42,
+      cashier_rotation DECIMAL(10,2) NOT NULL DEFAULT 0,
+      door_x DECIMAL(10,2) NOT NULL DEFAULT 54,
+      door_y DECIMAL(10,2) NOT NULL DEFAULT 48,
+      door_width DECIMAL(10,2) NOT NULL DEFAULT 62,
+      door_height DECIMAL(10,2) NOT NULL DEFAULT 54,
+      door_rotation DECIMAL(10,2) NOT NULL DEFAULT 0,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_room_layouts_zone FOREIGN KEY (zone_id) REFERENCES zones(id)
+    )
+  `);
+
+  const [columns] = await db.query(`SHOW COLUMNS FROM room_layouts`);
+  const existingColumns = new Set(columns.map((column) => column.Field));
+  const columnsToAdd = [
+    ["cashier_width", "DECIMAL(10,2) NOT NULL DEFAULT 64"],
+    ["cashier_height", "DECIMAL(10,2) NOT NULL DEFAULT 42"],
+    ["cashier_rotation", "DECIMAL(10,2) NOT NULL DEFAULT 0"],
+    ["door_width", "DECIMAL(10,2) NOT NULL DEFAULT 62"],
+    ["door_height", "DECIMAL(10,2) NOT NULL DEFAULT 54"],
+    ["door_rotation", "DECIMAL(10,2) NOT NULL DEFAULT 0"],
+  ];
+
+  for (const [columnName, definition] of columnsToAdd) {
+    if (!existingColumns.has(columnName)) {
+      await db.query(`ALTER TABLE room_layouts ADD COLUMN ${columnName} ${definition}`);
+    }
+  }
+};
+
+const toRoomLayoutResponse = (layout) => ({
+  id: layout.id,
+  zoneId: layout.zone_id,
+  hasCashier: Boolean(layout.has_cashier),
+  cashierX: Number(layout.cashier_x),
+  cashierY: Number(layout.cashier_y),
+  cashierWidth: Number(layout.cashier_width ?? 64),
+  cashierHeight: Number(layout.cashier_height ?? 42),
+  cashierRotation: Number(layout.cashier_rotation ?? 0),
+  doorX: Number(layout.door_x),
+  doorY: Number(layout.door_y),
+  doorWidth: Number(layout.door_width ?? 62),
+  doorHeight: Number(layout.door_height ?? 54),
+  doorRotation: Number(layout.door_rotation ?? 0),
+  createdAt: layout.created_at,
+  updatedAt: layout.updated_at,
+});
+
 app.get("/", (req, res) => {
   res.json({
     message: "Backend Reservasi Meja berjalan",
@@ -308,6 +381,36 @@ app.get(
   }),
 );
 
+app.patch(
+  "/api/users/me",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { name } = req.body;
+    const cleanName = String(name || "").trim();
+
+    if (cleanName.length < 2) {
+      return res.status(400).json({ message: "Nama minimal 2 karakter" });
+    }
+
+    await db.query(
+      `UPDATE users
+       SET name = :name
+       WHERE id = :id`,
+      { id: req.user.id, name: cleanName },
+    );
+
+    const [rows] = await db.query(
+      `SELECT id, name, email, phone, role, status, created_at, updated_at
+       FROM users
+       WHERE id = :id
+       LIMIT 1`,
+      { id: req.user.id },
+    );
+
+    ok(res, { user: toUserResponse(rows[0]) }, "Profil berhasil diperbarui");
+  }),
+);
+
 app.get(
   "/api/zones",
   asyncHandler(async (req, res) => {
@@ -380,21 +483,21 @@ app.patch(
 app.get(
   "/api/tables",
   asyncHandler(async (req, res) => {
-    const { floor, room, status } = req.query;
+    const { floor, room, status, startTime, endTime, guestCount } = req.query;
     const filters = [];
     const params = {};
 
-    if (floor) {
+    if (floor && floor !== "all") {
       filters.push("t.floor = :floor");
       params.floor = floor;
     }
 
-    if (room) {
+    if (room && room !== "all") {
       filters.push("t.room = :room");
       params.room = room;
     }
 
-    if (status) {
+    if (status && status !== "all") {
       filters.push("t.status = :status");
       params.status = status;
     }
@@ -409,7 +512,63 @@ app.get(
       params,
     );
 
+    if (startTime && endTime) {
+      const [reservationRows] = await db.query(
+        `SELECT table_id, start_time, end_time, status
+         FROM reservations
+         WHERE status IN ('pending', 'confirmed')
+           AND start_time < :endTime
+           AND end_time > :startTime`,
+        { startTime, endTime },
+      );
+      const conflictsByTable = new Map();
+      const now = Date.now();
+
+      reservationRows.forEach((reservation) => {
+        const current = conflictsByTable.get(Number(reservation.table_id));
+        if (!current || new Date(reservation.start_time) < new Date(current.start_time)) {
+          conflictsByTable.set(Number(reservation.table_id), reservation);
+        }
+      });
+
+      ok(
+        res,
+        rows.map((table) => {
+          const response = toTableResponse(table);
+          const conflict = conflictsByTable.get(Number(table.id));
+
+          if (response.status === "inactive") return response;
+
+          if (guestCount && Number(response.capacity) < Number(guestCount)) {
+            return { ...response, status: "unavailable", unavailableReason: "capacity" };
+          }
+
+          if (!conflict) return { ...response, status: "available" };
+
+          const conflictStart = new Date(conflict.start_time).getTime();
+          const conflictEnd = new Date(conflict.end_time).getTime();
+          const isInUse = now >= conflictStart && now <= conflictEnd;
+
+          return { ...response, status: isInUse ? "booked" : "reserved" };
+        }),
+      );
+      return;
+    }
+
     ok(res, rows.map(toTableResponse));
+  }),
+);
+
+app.get(
+  "/api/room-layouts",
+  asyncHandler(async (req, res) => {
+    await ensureRoomLayoutsTable();
+
+    const [rows] = await db.query(
+      `SELECT * FROM room_layouts ORDER BY zone_id ASC`,
+    );
+
+    ok(res, rows.map(toRoomLayoutResponse));
   }),
 );
 
@@ -446,6 +605,66 @@ app.post(
     );
 
     ok(res, { id: result.insertId }, "Meja berhasil dibuat");
+  }),
+);
+
+app.patch(
+  "/api/admin/room-layouts/:zoneId",
+  asyncHandler(async (req, res) => {
+    await ensureRoomLayoutsTable();
+
+    const {
+      hasCashier = false,
+      cashierX = 330,
+      cashierY = 260,
+      cashierWidth = 64,
+      cashierHeight = 42,
+      cashierRotation = 0,
+      doorX = 54,
+      doorY = 48,
+      doorWidth = 62,
+      doorHeight = 54,
+      doorRotation = 0,
+    } = req.body;
+
+    await db.query(
+      `INSERT INTO room_layouts
+       (zone_id, has_cashier, cashier_x, cashier_y, cashier_width, cashier_height, cashier_rotation, door_x, door_y, door_width, door_height, door_rotation)
+       VALUES (:zoneId, :hasCashier, :cashierX, :cashierY, :cashierWidth, :cashierHeight, :cashierRotation, :doorX, :doorY, :doorWidth, :doorHeight, :doorRotation)
+       ON DUPLICATE KEY UPDATE
+         has_cashier = VALUES(has_cashier),
+         cashier_x = VALUES(cashier_x),
+         cashier_y = VALUES(cashier_y),
+         cashier_width = VALUES(cashier_width),
+         cashier_height = VALUES(cashier_height),
+         cashier_rotation = VALUES(cashier_rotation),
+         door_x = VALUES(door_x),
+         door_y = VALUES(door_y),
+         door_width = VALUES(door_width),
+         door_height = VALUES(door_height),
+         door_rotation = VALUES(door_rotation)`,
+      {
+        zoneId: req.params.zoneId,
+        hasCashier,
+        cashierX,
+        cashierY,
+        cashierWidth,
+        cashierHeight,
+        cashierRotation,
+        doorX,
+        doorY,
+        doorWidth,
+        doorHeight,
+        doorRotation,
+      },
+    );
+
+    const [rows] = await db.query(
+      `SELECT * FROM room_layouts WHERE zone_id = :zoneId LIMIT 1`,
+      { zoneId: req.params.zoneId },
+    );
+
+    ok(res, toRoomLayoutResponse(rows[0]), "Layout ruangan berhasil diperbarui");
   }),
 );
 
@@ -531,6 +750,47 @@ app.get(
     );
 
     ok(res, rows.map(toMenuResponse));
+  }),
+);
+
+app.post(
+  "/api/admin/uploads/menu-image",
+  asyncHandler(async (req, res) => {
+    const { fileName, mimeType, dataUrl } = req.body;
+
+    if (!fileName || !mimeType || !dataUrl) {
+      return res.status(400).json({ message: "fileName, mimeType, dan dataUrl wajib diisi" });
+    }
+
+    if (!allowedImageTypes.has(mimeType)) {
+      return res.status(400).json({ message: "Format gambar harus JPG, PNG, atau WEBP" });
+    }
+
+    const base64Data = String(dataUrl).replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, "");
+    const buffer = Buffer.from(base64Data, "base64");
+
+    if (!buffer.length || buffer.length > maxImageUploadSize) {
+      return res.status(400).json({ message: "Ukuran gambar maksimal 2MB" });
+    }
+
+    const extensionByType = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+    };
+    const safeName = sanitizeFileName(fileName);
+    const extension = extensionByType[mimeType];
+    const storedFileName = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}-${safeName}.${extension}`;
+
+    await fs.mkdir(uploadDir, { recursive: true });
+    await fs.writeFile(path.join(uploadDir, storedFileName), buffer);
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    ok(
+      res,
+      { imageUrl: `${baseUrl}/uploads/menus/${storedFileName}` },
+      "Foto hidangan berhasil diupload",
+    );
   }),
 );
 
@@ -822,6 +1082,25 @@ app.patch(
     );
 
     ok(res, { id: Number(req.params.id) }, "Notifikasi ditandai sudah dibaca");
+  }),
+);
+
+app.patch(
+  "/api/notifications/user/:userId/read-all",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    if (req.user.role !== "admin" && Number(req.params.userId) !== Number(req.user.id)) {
+      return res.status(403).json({ message: "Tidak bisa mengubah notifikasi user lain" });
+    }
+
+    await db.query(
+      `UPDATE notifications
+       SET is_read = TRUE
+       WHERE user_id = :userId`,
+      { userId: req.params.userId },
+    );
+
+    ok(res, { userId: Number(req.params.userId) }, "Semua notifikasi ditandai sudah dibaca");
   }),
 );
 

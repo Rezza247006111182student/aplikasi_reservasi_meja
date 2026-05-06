@@ -1,24 +1,142 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import InteractiveFloorPlan from "../../_components/InteractiveFloorPlan";
 import ReservationFilterForm from "../../_components/ReservationFilterForm";
 import SiteFooter from "../../_components/SiteFooter";
 import SiteHeader from "../../_components/SiteHeader";
 import { apiFetch } from "../../_lib/api";
 
+const toSqlDateTime = (date, time, addHours = 0) => {
+  const value = new Date(`${date}T${time}:00`);
+  value.setHours(value.getHours() + addHours);
+
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  const hour = String(value.getHours()).padStart(2, "0");
+  const minute = String(value.getMinutes()).padStart(2, "0");
+  const second = String(value.getSeconds()).padStart(2, "0");
+
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+};
+
 export default function ReservasiPage() {
   const [selectedTable, setSelectedTable] = useState(null);
   const [confirmationTable, setConfirmationTable] = useState(null);
+  const [availabilityQuery, setAvailabilityQuery] = useState(null);
+  const [availabilityMessage, setAvailabilityMessage] = useState("");
+  const [availabilitySummary, setAvailabilitySummary] = useState(null);
+  const [zones, setZones] = useState([]);
+  const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
   const [form, setForm] = useState({
     date: "",
     time: "",
     guestCount: "2",
-    area: "all",
+    floor: "all",
+    room: "all",
   });
   const [submitStatus, setSubmitStatus] = useState({ type: "", message: "" });
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    apiFetch("/api/zones")
+      .then((data) => {
+        if (isMounted) setZones(data);
+      })
+      .catch(() => {
+        if (isMounted) setZones([]);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const floorOptions = useMemo(() => {
+    const floors = [...new Set(zones.map((zone) => zone.floor).filter(Boolean))];
+    return [
+      { label: "Semua lantai", value: "all" },
+      ...floors.map((floor) => ({ label: floor, value: floor })),
+    ];
+  }, [zones]);
+
+  const roomOptions = useMemo(() => {
+    const rooms = [
+      ...new Set(
+        zones
+          .filter((zone) => form.floor === "all" || zone.floor === form.floor)
+          .map((zone) => zone.room)
+          .filter(Boolean),
+      ),
+    ];
+
+    return [
+      { label: "Semua ruangan", value: "all" },
+      ...rooms.map((room) => ({ label: room, value: room })),
+    ];
+  }, [form.floor, zones]);
+
+  const handleFormChange = useCallback((updater) => {
+    setForm((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+
+      if (next.floor !== current.floor) {
+        return { ...next, room: "all" };
+      }
+
+      return next;
+    });
+    setSelectedTable(null);
+    setConfirmationTable(null);
+    setAvailabilitySummary(null);
+    setAvailabilityMessage("");
+  }, []);
+
+  const checkAvailability = () => {
+    if (!form.date || !form.time || !form.guestCount) {
+      setSubmitStatus({
+        type: "error",
+        message: "Isi tanggal, waktu, dan jumlah tamu sebelum mengecek ketersediaan.",
+      });
+      return;
+    }
+
+    setIsCheckingAvailability(true);
+    setSubmitStatus({ type: "", message: "" });
+    setSelectedTable(null);
+    setConfirmationTable(null);
+    setAvailabilitySummary(null);
+    setAvailabilityQuery({
+      startTime: toSqlDateTime(form.date, form.time),
+      endTime: toSqlDateTime(form.date, form.time, 2),
+      guestCount: form.guestCount,
+      floor: form.floor,
+      room: form.room,
+      checkedAt: Date.now(),
+    });
+    setAvailabilityMessage(`Ketersediaan meja diperiksa untuk ${form.date}, pukul ${form.time}.`);
+    window.setTimeout(() => setIsCheckingAvailability(false), 350);
+  };
+
+  const handleAvailabilityChange = useCallback(
+    (summary) => {
+      setAvailabilitySummary(summary);
+      if (availabilityQuery) {
+        const floorText = form.floor === "all" ? "semua lantai" : form.floor;
+        const roomText = form.room === "all" ? "semua ruangan" : form.room;
+
+        setAvailabilityMessage(
+          `${summary.available} dari ${summary.total} meja tersedia di ${floorText}, ${roomText} untuk ${form.date}, pukul ${form.time}.`,
+        );
+        setIsCheckingAvailability(false);
+      }
+    },
+    [availabilityQuery, form.date, form.floor, form.room, form.time],
+  );
 
   const createReservation = async () => {
     if (!confirmationTable?.tableId) {
@@ -31,8 +149,8 @@ export default function ReservasiPage() {
       return;
     }
 
-    const startTime = new Date(`${form.date}T${form.time}:00`);
-    const endTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000);
+    const startTime = toSqlDateTime(form.date, form.time);
+    const endTime = toSqlDateTime(form.date, form.time, 2);
 
     setIsSubmitting(true);
     setSubmitStatus({ type: "", message: "" });
@@ -53,8 +171,8 @@ export default function ReservasiPage() {
           customerName: auth.user.name,
           customerPhone: auth.user.phone,
           reservationDate: form.date,
-          startTime: startTime.toISOString().slice(0, 19).replace("T", " "),
-          endTime: endTime.toISOString().slice(0, 19).replace("T", " "),
+          startTime,
+          endTime,
           guestCount: Number(form.guestCount),
           note: "Reservasi dari frontend pelanggan.",
         }),
@@ -65,6 +183,14 @@ export default function ReservasiPage() {
         message: `Reservasi berhasil dibuat dengan kode ${result.code}.`,
       });
       setConfirmationTable(null);
+      setAvailabilityQuery((current) =>
+        current
+          ? {
+              ...current,
+              checkedAt: Date.now(),
+            }
+          : current,
+      );
     } catch (error) {
       setSubmitStatus({ type: "error", message: error.message });
     } finally {
@@ -94,7 +220,13 @@ export default function ReservasiPage() {
           <ReservationFilterForm
             selectedTable={selectedTable}
             form={form}
-            onFormChange={setForm}
+            floorOptions={floorOptions}
+            roomOptions={roomOptions}
+            onFormChange={handleFormChange}
+            onCheckAvailability={checkAvailability}
+            isChecking={isCheckingAvailability}
+            availabilityMessage={availabilityMessage}
+            availabilitySummary={availabilitySummary}
           />
         </div>
       </section>
@@ -132,6 +264,8 @@ export default function ReservasiPage() {
               </div>
             ) : null}
             <InteractiveFloorPlan
+              availabilityQuery={availabilityQuery}
+              onAvailabilityChange={handleAvailabilityChange}
               onSelectionChange={setSelectedTable}
               onConfirmSelection={setConfirmationTable}
             />

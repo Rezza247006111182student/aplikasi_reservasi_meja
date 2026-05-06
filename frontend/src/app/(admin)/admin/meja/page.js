@@ -11,7 +11,7 @@ const allOption = { label: "Semua", value: "all" };
 const statusOptions = [
   { label: "Semua status", value: "all" },
   { label: "Tersedia", value: "available" },
-  { label: "Dipesan", value: "reserved" },
+  { label: "Telah dipesan", value: "reserved" },
   { label: "Tidak aktif", value: "inactive" },
 ];
 
@@ -25,8 +25,9 @@ const shapeOptions = [
 
 const statusClass = {
   available: "bg-green-100 text-green-700",
-  reserved: "bg-red-100 text-red-700",
+  reserved: "bg-amber-100 text-amber-700",
   booked: "bg-red-100 text-red-700",
+  unavailable: "bg-slate-100 text-slate-700",
   inactive: "bg-slate-100 text-slate-700",
 };
 
@@ -110,7 +111,7 @@ export default function AdminTablesPage() {
     ["Total Meja", tables.length, "fa-solid fa-chair"],
     ["Aktif", tables.filter((table) => table.status !== "inactive").length, "fa-regular fa-circle-check"],
     ["Tersedia", tables.filter((table) => table.status === "available").length, "fa-solid fa-check"],
-    ["Dipesan", tables.filter((table) => ["reserved", "booked"].includes(table.status)).length, "fa-regular fa-clock"],
+    ["Dipakai/Dipesan", tables.filter((table) => ["reserved", "booked"].includes(table.status)).length, "fa-regular fa-clock"],
   ];
 
   const openCreateModal = () => {
