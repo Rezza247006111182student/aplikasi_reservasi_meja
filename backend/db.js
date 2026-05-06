@@ -1,19 +1,15 @@
-const mysql = require("mysql2");
+const mysql = require("mysql2/promise");
 
-const db = mysql.createConnection({
+const db = mysql.createPool({
   host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT || 4000),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-});
-
-db.connect((err) => {
-  if (err) {
-    console.error("Koneksi database gagal:", err.message);
-    return;
-  }
-
-  console.log("Database MySQL terhubung");
+  waitForConnections: true,
+  connectionLimit: 10,
+  namedPlaceholders: true,
+  ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : undefined,
 });
 
 module.exports = db;
